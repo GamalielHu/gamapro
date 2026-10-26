@@ -2,6 +2,11 @@
 
 * { -webkit-tap-highlight-color: transparent; }
 
+/* iPad/iPhone en modo app: respetar notch y barra de inicio */
+#app-view, #login-view { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+#osd { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+html, body { overscroll-behavior: none; }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #243049; border-radius: 8px; border: 2px solid #0b0f17; }
 ::-webkit-scrollbar-track { background: transparent; }

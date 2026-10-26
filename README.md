@@ -15,6 +15,19 @@ También funciona en cualquier hosting estático (GitHub Pages, Netlify). En ese
 <script>window.GAMAPRO_CONFIG = { corsProxy: 'https://mi-proxy/?url={url}', corsProxyMode: 'auto' };</script>
 ```
 
+## Publicar en Cloudflare (para usarla como app en iPad / Android)
+
+Un solo Worker gratuito sirve la app con https y el proxy en `/proxy` (necesario porque casi todos los paneles usan http).
+
+1. Crea una cuenta gratis en [dash.cloudflare.com](https://dash.cloudflare.com).
+2. **Workers & Pages → Create → Import a repository**, conecta GitHub y elige `gamapro`.
+3. Deja los valores por defecto (comando de deploy `npx wrangler deploy`) y pulsa **Deploy**.
+4. Queda en `https://gamapro.<tu-cuenta>.workers.dev`. Cada push a `main` vuelve a publicar.
+
+Opcional: en el Worker, **Settings → Variables**, `ALLOW_HOSTS=panel.tv` limita el proxy a tu panel.
+
+**Instalar:** iPad/iPhone → Safari → Compartir → *Agregar a inicio*. Android → Chrome → ⋮ → *Instalar app*.
+
 ## Estructura
 
 | Ruta | Rol |
@@ -28,6 +41,8 @@ También funciona en cualquier hosting estático (GitHub Pages, Netlify). En ese
 | `src/ui/player-ui.js` | OSD: audio, subtítulos, zapping, teclado/mando/control TV |
 | `src/ui/settings.js` | Ajustes |
 | `server.mjs` | Servidor local opcional (estático + proxy CORS, sin dependencias) |
+| `worker/` | Worker de Cloudflare (app + proxy); `worker/proxy.js` se comparte con el servidor local |
+| `manifest.webmanifest`, `sw.js`, `icons/` | App instalable (PWA): ícono, pantalla completa, arranque sin red |
 
 ## Controles del reproductor
 

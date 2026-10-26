@@ -1,0 +1,11 @@
+{
+  // Despliegue en Cloudflare Workers: app estática + proxy CORS (/proxy).
+  "name": "gamapro",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-06-01",
+  "assets": {
+    "directory": ".",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  }
+}

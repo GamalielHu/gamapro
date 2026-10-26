@@ -44,6 +44,13 @@ export function proxify(target) {
   return new URL(raw, globalThis.location?.href).href;
 }
 
+/** Para el reproductor nativo (Safari/iPad): pide al proxy de GamaPro que también
+ *  reescriba los segmentos del playlist. Proxies de terceros no lo soportan. */
+export function proxifyPlaylist(target) {
+  const url = proxify(target);
+  return url !== target && /\/proxy\?url=/.test(proxy.url) ? `${url}&mode=proxy` : url;
+}
+
 export function isProxied(url) {
   if (!proxy.url) return false;
   const base = new URL(proxy.url.split('{url}')[0], globalThis.location?.href).href;

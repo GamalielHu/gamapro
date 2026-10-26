@@ -11,7 +11,7 @@
  * Eventos (EventTarget): 'source', 'state', 'tracks', 'error', 'autoplay-muted'.
  */
 import Hls from 'hls.js';
-import { proxify, isProxied } from '../services/xtream.js';
+import { proxify, proxifyPlaylist, isProxied } from '../services/xtream.js';
 
 const MPEGTS_URL = 'https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/+esm';
 
@@ -59,6 +59,11 @@ function makeProxyLoader() {
     }
   };
 }
+
+/** iPad/iPhone/Safari: el HLS nativo gasta menos batería y permite AirPlay. */
+const PREFER_NATIVE_HLS = typeof document !== 'undefined'
+  && document.createElement('video').canPlayType('application/vnd.apple.mpegurl') !== ''
+  && /Apple/.test(navigator.vendor || '');
 
 const STALL_LIVE_MS = 8000;
 const STALL_VOD_MS = 15000;
@@ -184,7 +189,7 @@ export class PlayerEngine extends EventTarget {
   }
 
   #playHls(src, token) {
-    if (!Hls.isSupported()) {
+    if (PREFER_NATIVE_HLS || !Hls.isSupported()) {
       if (this.#video.canPlayType('application/vnd.apple.mpegurl')) return this.#playNative(src);
       return this.#next('HLS no soportado');
     }
@@ -266,7 +271,8 @@ export class PlayerEngine extends EventTarget {
   #playNative(src) {
     const v = this.#video;
     this.#nativeActive = true;
-    v.src = src.proxy ? proxify(src.url) : src.url;
+    if (!src.proxy) v.src = src.url;
+    else v.src = src.kind === 'hls' ? proxifyPlaylist(src.url) : proxify(src.url);
     if (src.url.startsWith('blob:')) this.#blobs.add(src.url);
     if (!this.live && this.startTime) v.addEventListener('loadedmetadata', () => { v.currentTime = this.startTime; }, { once: true });
     v.load();
