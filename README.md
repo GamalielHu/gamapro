@@ -6,6 +6,7 @@ Cliente web IPTV ultraligero para la API Xtream Codes. Sin build: HTML + Tailwin
 
 ```bash
 npm start            # http://127.0.0.1:8787 (app + proxy CORS en /proxy?url=)
+npm run start:lan    # igual, pero accesible desde celulares/tablets de la misma red (muestra la IP)
 ```
 
 También funciona en cualquier hosting estático (GitHub Pages, Netlify). En ese caso, si el panel bloquea CORS o usa `http://` en una página `https://`, configura un proxy en **Ajustes** o define antes de cargar la app:

@@ -5,7 +5,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "start:lan": "node server.mjs --lan"
   },
   "engines": {
     "node": ">=18"

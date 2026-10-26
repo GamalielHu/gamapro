@@ -7,16 +7,18 @@
  *    .m3u8 a URLs absolutas para que hls.js resuelva bien los segmentos.
  *
  * Variables: PORT (8787), HOST (127.0.0.1), ALLOW_HOSTS ("a.tv,b.tv"), PROXY_UA.
+ * `--lan` escucha en 0.0.0.0 para abrir la app desde celulares/tablets de la misma red.
  */
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { networkInterfaces } from 'node:os';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PORT = Number(process.env.PORT || 8787);
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || (process.argv.includes('--lan') ? '0.0.0.0' : '127.0.0.1');
 const ALLOW = (process.env.ALLOW_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const UA = process.env.PROXY_UA || 'VLC/3.0.20 LibVLC/3.0.20';
 
@@ -103,5 +105,9 @@ createServer((req, res) => {
   if (pathname === '/proxy') { proxy(req, res, searchParams.get('url') || ''); return; }
   serveStatic(req, res, pathname);
 }).listen(PORT, HOST, () => {
-  console.log(`GamaPro → http://${HOST}:${PORT}  (proxy CORS en /proxy?url=)`);
+  console.log(`GamaPro → http://127.0.0.1:${PORT}  (proxy CORS en /proxy?url=)`);
+  if (HOST === '0.0.0.0') {
+    const ips = Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal);
+    for (const ip of ips) console.log(`  En la red local: http://${ip.address}:${PORT}`);
+  }
 });
