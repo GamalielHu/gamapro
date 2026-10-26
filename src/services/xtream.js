@@ -44,11 +44,31 @@ export function proxify(target) {
   return new URL(raw, globalThis.location?.href).href;
 }
 
+/** Proxy de GamaPro (server.mjs o Worker): "/proxy?url=", "proxy?url=" o absoluto. */
+const isOwnProxy = () => /(^|\/)proxy\?url=$/.test(proxy.url);
+
+/** ¿Las peticiones a esta URL deben ir directo al proxy? (mixed content, modo
+ *  'always' o el panel ya bloqueó una llamada directa en esta sesión). */
+export function needsProxy(target) {
+  if (!proxyEnabled()) return false;
+  try {
+    return proxy.mode === 'always' || proxiedHosts.has(new URL(target).host) || isMixedContent(target);
+  } catch {
+    return false;
+  }
+}
+
 /** Para el reproductor nativo (Safari/iPad): pide al proxy de GamaPro que también
  *  reescriba los segmentos del playlist. Proxies de terceros no lo soportan. */
 export function proxifyPlaylist(target) {
   const url = proxify(target);
-  return url !== target && /\/proxy\?url=/.test(proxy.url) ? `${url}&mode=proxy` : url;
+  return url !== target && isOwnProxy() ? `${url}&mode=proxy` : url;
+}
+
+/** URL de diagnóstico del proxy de GamaPro (null con proxies de terceros). */
+export function proxyDebugUrl(target) {
+  if (!isOwnProxy()) return null;
+  return new URL(proxy.url.replace(/proxy\?url=$/, 'proxy/debug?url=') + encodeURIComponent(target), globalThis.location?.href).href;
 }
 
 export function isProxied(url) {
@@ -91,8 +111,7 @@ async function request(url, signal) {
 /** GET JSON con fallback automático al proxy CORS ante errores de red/CORS. */
 export async function fetchJson(target, { signal } = {}) {
   const host = new URL(target).host;
-  const useProxy = proxyEnabled() && (proxy.mode === 'always' || proxiedHosts.has(host) || isMixedContent(target));
-  if (useProxy) return request(proxify(target), signal);
+  if (needsProxy(target)) return request(proxify(target), signal);
 
   try {
     return await request(target, signal);

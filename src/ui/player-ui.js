@@ -9,6 +9,7 @@
  *        Esc/Back → cerrar menú o salir · A = audio · S = subtítulos · F = pantalla completa
  */
 import { h, esc, fmtTime, KEY, toast } from './dom.js';
+import { proxyDebugUrl } from '../services/xtream.js';
 
 const HIDE_MS = 3500;
 const ZAP_MS = 350;
@@ -48,6 +49,7 @@ export class PlayerUI {
         <div data-digits class="hidden absolute top-6 right-6 text-4xl font-bold tabular-nums bg-black/60 px-4 py-2 rounded-xl"></div>
         <div data-spinner class="hidden absolute inset-0 flex items-center justify-center pointer-events-none"><div class="spinner"></div></div>
         <div data-center class="absolute inset-0" aria-hidden="true"></div>
+        <div data-details class="hidden absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(40rem,92vw)] max-h-[70vh] overflow-y-auto bg-ink-800/95 border border-white/10 rounded-xl p-4 text-xs shadow-2xl z-10"></div>
         <div class="osd-layer relative bg-gradient-to-t from-black/85 to-transparent px-5 pt-10 pb-5">
           <div data-seekrow class="flex items-center gap-3 mb-3 text-xs tabular-nums">
             <span data-cur>0:00</span>
@@ -74,7 +76,7 @@ export class PlayerUI {
     const q = (s) => this.ui.querySelector(s);
     this.el = {
       title: q('[data-title]'), sub: q('[data-sub]'), clock: q('[data-clock]'), digits: q('[data-digits]'),
-      spinner: q('[data-spinner]'), center: q('[data-center]'), seekRow: q('[data-seekrow]'), seek: q('[data-seek]'),
+      spinner: q('[data-spinner]'), details: q('[data-details]'), center: q('[data-center]'), seekRow: q('[data-seekrow]'), seek: q('[data-seek]'),
       cur: q('[data-cur]'), dur: q('[data-dur]'), controls: q('[data-controls]'), menu: q('[data-menu]'),
       toggle: q('[data-act="toggle"]'), mute: q('[data-act="mute"]'),
     };
@@ -112,7 +114,7 @@ export class PlayerUI {
     engine.addEventListener('error', (e) => {
       el.spinner.classList.add('hidden');
       el.sub.textContent = e.detail.message;
-      toast(e.detail.message, { type: 'error', ms: 5000 });
+      this.showDetails(e.detail.attempts || []);
       this.showOsd(true);
     });
     engine.addEventListener('autoplay-muted', () => toast('Reproduciendo sin sonido: pulsa 🔊 para activarlo'));
@@ -150,6 +152,7 @@ export class PlayerUI {
   }
 
   playCurrent() {
+    this.el.details.classList.add('hidden');
     const { title, sources, live } = this.resolve(this.ctx);
     this.live = live;
     this.el.title.textContent = title;
@@ -218,6 +221,36 @@ export class PlayerUI {
     const v = this.video;
     if (this.live || !Number.isFinite(v.duration)) return;
     v.currentTime = Math.max(0, Math.min(v.duration - 1, v.currentTime + sec));
+  }
+
+  // ---------- diagnóstico cuando ninguna fuente funciona ----------
+  showDetails(attempts) {
+    const box = this.el.details;
+    const label = (src) => `${src.kind === 'hls' ? 'HLS' : src.kind === 'mpegts' ? 'MPEG-TS' : 'Directo'}${src.proxy ? ' vía proxy' : ''}`;
+    const path = (url) => { try { const u = new URL(url); return `${u.host}/…/${u.pathname.split('/').pop()}`; } catch { return url; } };
+    const probe = attempts.find((a) => a.source.proxy)?.source.url || attempts[0]?.source.url;
+    const debugUrl = probe && proxyDebugUrl(probe);
+    box.innerHTML = `
+      <div class="flex items-center gap-2 mb-2"><b class="text-sm text-red-300 flex-1">No se pudo reproducir</b>
+        <button class="osd-btn !w-8 !h-8 !text-sm" data-x aria-label="Cerrar">✕</button></div>
+      <ol class="space-y-1 list-decimal pl-4">${attempts.map((a) => `<li><span class="text-slate-300">${esc(label(a.source))}</span> · <span class="text-slate-400">${esc(path(a.source.url))}</span><br><span class="text-amber-300">${esc(a.reason)}</span></li>`).join('')}</ol>
+      ${debugUrl ? '<button class="btn mt-3 !py-1.5 !text-xs" data-probe>Diagnóstico del proxy</button><pre data-out class="mt-2 whitespace-pre-wrap break-all text-slate-300"></pre>' : ''}`;
+    box.classList.remove('hidden');
+    box.querySelector('[data-x]').onclick = () => box.classList.add('hidden');
+    const btn = box.querySelector('[data-probe]');
+    if (btn) {
+      btn.onclick = async () => {
+        const out = box.querySelector('[data-out]');
+        out.textContent = 'Consultando…';
+        try {
+          const res = await fetch(debugUrl, { cache: 'no-store' });
+          out.textContent = res.ok ? JSON.stringify(await res.json(), null, 1) : `HTTP ${res.status}: ${await res.text()}`;
+        } catch (err) {
+          out.textContent = `El proxy no respondió: ${err.message}`;
+        }
+      };
+      btn.focus();
+    }
   }
 
   // ---------- menús de audio / subtítulos ----------

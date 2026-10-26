@@ -1,5 +1,5 @@
 /** Arranque de GamaPro: sesión, navegación y conexión catálogo ↔ reproductor. */
-import { XtreamClient, configureProxy, getProxy, proxyEnabled } from './services/xtream.js';
+import { XtreamClient, configureProxy, getProxy, proxyEnabled, needsProxy } from './services/xtream.js';
 import { loadCredentials, saveCredentials, clearCredentials, loadSettings, accountKey } from './services/cache.js';
 import { PlayerEngine } from './player/engine.js';
 import { renderLogin } from './ui/login.js';
@@ -28,7 +28,8 @@ configureProxy({ url: settings.proxyUrl || getProxy().url, mode: settings.proxyM
 function withProxyFallback(direct) {
   if (!proxyEnabled()) return direct;
   const proxied = direct.filter((s) => s.kind !== 'native' || s.url.startsWith('http:')).map((s) => ({ ...s, proxy: true }));
-  return getProxy().mode === 'always' ? proxied : [...direct, ...proxied];
+  // Si el panel ya necesitó el proxy (CORS, http en página https), no perder tiempo con intentos directos.
+  return needsProxy(direct[0]?.url || '') ? proxied : [...direct, ...proxied];
 }
 
 function buildSources(client, section, item) {

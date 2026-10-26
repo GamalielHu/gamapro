@@ -65,6 +65,12 @@ const PREFER_NATIVE_HLS = typeof document !== 'undefined'
   && document.createElement('video').canPlayType('application/vnd.apple.mpegurl') !== ''
   && /Apple/.test(navigator.vendor || '');
 
+function describeHlsError(data) {
+  const code = data.response?.code;
+  if (code === 0) return `${data.details} (bloqueado por CORS o sin conexión)`;
+  return code ? `${data.details} (HTTP ${code})` : String(data.details || data.type);
+}
+
 const STALL_LIVE_MS = 8000;
 const STALL_VOD_MS = 15000;
 const MAX_NET_RETRIES = 4;
@@ -84,6 +90,7 @@ export class PlayerEngine extends EventTarget {
   #lastTime = -1;
   #stallSince = 0;
   #blobs = new Set();
+  #attempts = [];
   live = false;
 
   constructor(video) {
@@ -111,6 +118,7 @@ export class PlayerEngine extends EventTarget {
     this.#sources = sources.filter(Boolean);
     this.#index = 0;
     this.#stalls = 0;
+    this.#attempts = [];
     this.live = live;
     this.startTime = startTime;
     this.#start();
@@ -162,7 +170,7 @@ export class PlayerEngine extends EventTarget {
     const token = this.#token;
     const src = this.current;
     if (!src) {
-      this.#emit('error', { message: 'No se pudo reproducir este contenido con ninguna fuente disponible.' });
+      this.#emit('error', { message: 'No se pudo reproducir este contenido con ninguna fuente disponible.', attempts: [...this.#attempts] });
       return;
     }
     this.#retries = 0;
@@ -176,6 +184,7 @@ export class PlayerEngine extends EventTarget {
 
   #next(reason) {
     console.warn('[engine] fuente fallida:', this.current?.url, '→', reason);
+    if (this.current) this.#attempts.push({ source: this.current, reason: String(reason) });
     this.#teardown();
     this.#index++;
     this.#start();
@@ -218,7 +227,7 @@ export class PlayerEngine extends EventTarget {
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
       // El manifiesto ya agotó sus reintentos internos: pasar a la siguiente fuente.
       if ([D.MANIFEST_LOAD_ERROR, D.MANIFEST_LOAD_TIMEOUT, D.MANIFEST_PARSING_ERROR].includes(data.details) && !hls.levels?.length) {
-        return this.#next(data.details);
+        return this.#next(describeHlsError(data));
       }
       if (this.#retries <= MAX_NET_RETRIES) {
         const delay = Math.min(500 * 2 ** (this.#retries - 1), 4000);
@@ -226,13 +235,13 @@ export class PlayerEngine extends EventTarget {
         this.#retryTimer = setTimeout(() => { if (token === this.#token) hls.startLoad(this.live ? -1 : undefined); }, delay);
         return;
       }
-      return this.#next(data.details);
+      return this.#next(describeHlsError(data));
     }
     if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
       if (this.#retries === 1) return hls.recoverMediaError();
       if (this.#retries === 2) { hls.swapAudioCodec(); return hls.recoverMediaError(); }
     }
-    this.#next(data.details || data.type);
+    this.#next(describeHlsError(data));
   }
 
   async #playMpegts(src, token) {
@@ -281,7 +290,9 @@ export class PlayerEngine extends EventTarget {
 
   #onNativeError() {
     if (!this.#nativeActive || !this.#video.error) return;
-    this.#next(`video error ${this.#video.error.code}`);
+    const e = this.#video.error;
+    const why = { 1: 'abortado', 2: 'error de red', 3: 'no se pudo decodificar', 4: 'formato no soportado o URL inaccesible' }[e.code] || '';
+    this.#next(`video error ${e.code} ${why}${e.message ? ` · ${e.message}` : ''}`);
   }
 
   #tryPlay() {

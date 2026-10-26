@@ -7,6 +7,8 @@
  *                                         cada segmento también pase por el proxy
  *                                         (reproductor nativo de Safari/iPad)
  *   GET /proxy/health                   → "gamapro-proxy"
+ *   GET /proxy/debug?url=<destino>      → JSON con la cadena de redirecciones y la
+ *                                         respuesta del panel vista desde el proxy
  */
 
 export const CORS = {
@@ -32,6 +34,33 @@ export function rewritePlaylist(text, base, wrap = (u) => u) {
 
 const text = (body, status = 200) => new Response(body, { status, headers: CORS });
 
+/** Diagnóstico: qué ve el proxy al pedir la URL (redirecciones, estado, tipo, primeros bytes). */
+async function debug(target, userAgent) {
+  const hops = [];
+  let url = target;
+  try {
+    for (let i = 0; i < 6; i++) {
+      const res = await fetch(url, { headers: { 'user-agent': userAgent, accept: '*/*' }, redirect: 'manual' });
+      const hop = { url: url.replace(/\/\/([^/]+)\/([^/]+)\/([^/]+)\//, '//$1/***/***/'), status: res.status, type: res.headers.get('content-type') };
+      hops.push(hop);
+      const loc = res.headers.get('location');
+      if (res.status >= 300 && res.status < 400 && loc) {
+        await res.body?.cancel();
+        url = new URL(loc, url).href;
+        continue;
+      }
+      const reader = res.body?.getReader();
+      const chunk = reader ? (await reader.read()).value : null;
+      await reader?.cancel();
+      hop.sample = chunk ? new TextDecoder().decode(chunk.slice(0, 160)).replace(/[^\x20-\x7e\n]/g, '.') : '';
+      break;
+    }
+  } catch (err) {
+    hops.push({ url, error: err.message });
+  }
+  return new Response(JSON.stringify({ hops }, null, 2), { headers: { ...CORS, 'content-type': 'application/json' } });
+}
+
 /**
  * @param {Request} request
  * @param {{ allowHosts?: string[], userAgent?: string }} [opts]
@@ -47,6 +76,7 @@ export async function handleProxy(request, { allowHosts = [], userAgent = DEFAUL
   try { target = new URL(self.searchParams.get('url') || ''); } catch { return text('url inválida', 400); }
   if (!/^https?:$/.test(target.protocol)) return text('protocolo no permitido', 400);
   if (allowHosts.length && !allowHosts.includes(target.hostname)) return text('host no permitido', 403);
+  if (self.pathname.endsWith('/debug')) return debug(target.href, userAgent);
 
   const headers = { 'user-agent': userAgent, accept: '*/*' };
   const range = request.headers.get('range');
