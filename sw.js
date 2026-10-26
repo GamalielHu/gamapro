@@ -1,9 +1,11 @@
 /**
- * Service worker: la app arranca al instante y sin red (shell + librerías en caché).
- * Estrategia stale-while-revalidate solo para la app y los CDN; la API del panel,
- * el proxy y los streams nunca pasan por aquí.
+ * Service worker: la app funciona sin red (shell + librerías en caché).
+ * - Archivos de la app: red primero (cada publicación se ve al instante),
+ *   caché solo si no hay conexión.
+ * - Librerías de CDN (URLs con versión fija): caché primero.
+ * La API del panel, el proxy y los streams nunca pasan por aquí.
  */
-const VERSION = 'gamapro-v1';
+const VERSION = 'gamapro-v2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'src/styles.css', 'src/main.js',
   'src/services/xtream.js', 'src/services/cache.js', 'src/player/engine.js',
@@ -43,15 +45,18 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith((async () => {
     const cache = await caches.open(VERSION);
-    const hit = await cache.match(req, { ignoreSearch: sameOrigin });
-    const network = fetch(req).then((res) => {
+    if (!sameOrigin) {
+      const hit = await cache.match(req);
+      if (hit) return hit;
+    }
+    try {
+      const res = await fetch(req, sameOrigin ? { cache: 'no-cache' } : undefined);
       if (res.ok) cache.put(req, res.clone());
       return res;
-    }).catch(() => hit);
-    if (hit) {
-      event.waitUntil(network);
-      return hit;
+    } catch (err) {
+      const hit = await cache.match(req, { ignoreSearch: true });
+      if (hit) return hit;
+      throw err;
     }
-    return network;
   })());
 });

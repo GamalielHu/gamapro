@@ -83,7 +83,14 @@
   <script type="module" src="src/main.js"></script>
   <script>
     if ('serviceWorker' in navigator && window.isSecureContext) {
-      navigator.serviceWorker.register('sw.js').catch((err) => console.warn('[sw]', err));
+      // Al publicarse una versión nueva, el service worker nuevo toma el control: recargar una vez.
+      if (navigator.serviceWorker.controller) {
+        let reloaded = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!reloaded) { reloaded = true; location.reload(); }
+        });
+      }
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch((err) => console.warn('[sw]', err));
     }
   </script>
 </body>
