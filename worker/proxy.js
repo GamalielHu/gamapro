@@ -34,39 +34,63 @@ export function rewritePlaylist(text, base, wrap = (u) => u) {
 
 const text = (body, status = 200) => new Response(body, { status, headers: CORS });
 
-/** Diagnóstico: qué ve el proxy al pedir la URL (redirecciones, estado, tipo, primeros bytes). */
-async function debug(target, userAgent) {
-  const hops = [];
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/** Cloudflare Workers no puede conectarse a IPs literales (error 1003). Muchos paneles
+ *  redirigen el stream a http://IP/...; se usa un nombre DNS comodín que resuelve
+ *  a esa misma IP (149.51.42.6 → 149.51.42.6.nip.io). */
+export function aliasIpHost(url, enabled) {
+  if (!enabled) return url;
+  const u = new URL(url);
+  if (!IPV4.test(u.hostname)) return url;
+  u.hostname = `${u.hostname}.nip.io`;
+  return u.href;
+}
+
+/** fetch siguiendo redirecciones a mano, para poder aplicar aliasIpHost en cada salto.
+ *  Devuelve la respuesta final y su URL real (sin alias), base para reescribir playlists. */
+async function fetchFollow(target, init, ipAlias, onHop) {
   let url = target;
-  try {
-    for (let i = 0; i < 6; i++) {
-      const res = await fetch(url, { headers: { 'user-agent': userAgent, accept: '*/*' }, redirect: 'manual' });
-      const hop = { url: url.replace(/\/\/([^/]+)\/([^/]+)\/([^/]+)\//, '//$1/***/***/'), status: res.status, type: res.headers.get('content-type') };
-      hops.push(hop);
-      const loc = res.headers.get('location');
-      if (res.status >= 300 && res.status < 400 && loc) {
-        await res.body?.cancel();
-        url = new URL(loc, url).href;
-        continue;
-      }
-      const reader = res.body?.getReader();
-      const chunk = reader ? (await reader.read()).value : null;
-      await reader?.cancel();
-      hop.sample = chunk ? new TextDecoder().decode(chunk.slice(0, 160)).replace(/[^\x20-\x7e\n]/g, '.') : '';
-      break;
+  for (let i = 0; i < 8; i++) {
+    const fetchUrl = aliasIpHost(url, ipAlias);
+    const res = await fetch(fetchUrl, { ...init, redirect: 'manual' });
+    const loc = res.headers.get('location');
+    onHop?.(url, fetchUrl, res);
+    if (res.status >= 300 && res.status < 400 && loc) {
+      await res.body?.cancel();
+      url = new URL(loc, url).href;
+      continue;
     }
+    return { res, url };
+  }
+  throw new Error('demasiadas redirecciones');
+}
+
+const mask = (url) => url.replace(/\/\/([^/]+)\/([^/]+)\/([^/]+)\//, '//$1/***/***/');
+
+/** Diagnóstico: qué ve el proxy al pedir la URL (redirecciones, estado, tipo, primeros bytes). */
+async function debug(target, userAgent, ipAlias) {
+  const hops = [];
+  try {
+    const { res } = await fetchFollow(target, { headers: { 'user-agent': userAgent, accept: '*/*' } }, ipAlias, (url, fetchUrl, r) => {
+      hops.push({ url: mask(url), ...(fetchUrl !== url ? { via: new URL(fetchUrl).host } : {}), status: r.status, type: r.headers.get('content-type') });
+    });
+    const reader = res.body?.getReader();
+    const chunk = reader ? (await reader.read()).value : null;
+    await reader?.cancel();
+    hops[hops.length - 1].sample = chunk ? new TextDecoder().decode(chunk.slice(0, 160)).replace(/[^\x20-\x7e\n]/g, '.') : '';
   } catch (err) {
-    hops.push({ url, error: err.message });
+    hops.push({ error: err.message });
   }
   return new Response(JSON.stringify({ hops }, null, 2), { headers: { ...CORS, 'content-type': 'application/json' } });
 }
 
 /**
  * @param {Request} request
- * @param {{ allowHosts?: string[], userAgent?: string }} [opts]
+ * @param {{ allowHosts?: string[], userAgent?: string, ipAlias?: boolean }} [opts]
  * @returns {Promise<Response>}
  */
-export async function handleProxy(request, { allowHosts = [], userAgent = DEFAULT_UA } = {}) {
+export async function handleProxy(request, { allowHosts = [], userAgent = DEFAULT_UA, ipAlias = false } = {}) {
   const self = new URL(request.url);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   if (self.pathname.endsWith('/health')) return text('gamapro-proxy');
@@ -76,15 +100,15 @@ export async function handleProxy(request, { allowHosts = [], userAgent = DEFAUL
   try { target = new URL(self.searchParams.get('url') || ''); } catch { return text('url inválida', 400); }
   if (!/^https?:$/.test(target.protocol)) return text('protocolo no permitido', 400);
   if (allowHosts.length && !allowHosts.includes(target.hostname)) return text('host no permitido', 403);
-  if (self.pathname.endsWith('/debug')) return debug(target.href, userAgent);
+  if (self.pathname.endsWith('/debug')) return debug(target.href, userAgent, ipAlias);
 
   const headers = { 'user-agent': userAgent, accept: '*/*' };
   const range = request.headers.get('range');
   if (range) headers.range = range;
 
-  let upstream;
+  let upstream, finalUrl;
   try {
-    upstream = await fetch(target, { headers, redirect: 'follow', signal: request.signal });
+    ({ res: upstream, url: finalUrl } = await fetchFollow(target.href, { headers, signal: request.signal }, ipAlias));
   } catch (err) {
     return text(`upstream: ${err.message}`, 502);
   }
@@ -95,7 +119,6 @@ export async function handleProxy(request, { allowHosts = [], userAgent = DEFAUL
     if (v) out.set(h, v);
   }
 
-  const finalUrl = upstream.url || target.href;
   const type = upstream.headers.get('content-type') || '';
   const isPlaylist = /mpegurl/i.test(type) || /\.m3u8?$/i.test(new URL(finalUrl).pathname);
   if (isPlaylist && upstream.ok) {

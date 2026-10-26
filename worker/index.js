@@ -11,6 +11,7 @@ export default {
       return handleProxy(request, {
         allowHosts: (env.ALLOW_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean),
         userAgent: env.PROXY_UA || undefined,
+        ipAlias: env.IP_ALIAS !== 'off', // Workers no puede abrir IPs literales (error 1003)
       });
     }
     return env.ASSETS.fetch(request);
