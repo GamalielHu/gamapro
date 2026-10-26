@@ -1,0 +1,76 @@
+:root { color-scheme: dark; }
+
+* { -webkit-tap-highlight-color: transparent; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #243049; border-radius: 8px; border: 2px solid #0b0f17; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.field {
+  background: #111827; border: 1px solid rgba(255,255,255,.08); border-radius: .5rem;
+  padding: .45rem .7rem; font-size: .875rem; color: #e2e8f0; outline: none;
+}
+.field:focus { border-color: #0ea5e9; box-shadow: 0 0 0 2px rgba(14,165,233,.35); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+  border-radius: .5rem; padding: .5rem 1rem; font-size: .875rem; font-weight: 600;
+  background: #1a2233; color: #e2e8f0; border: 1px solid rgba(255,255,255,.08); outline: none;
+}
+.btn:hover { background: #243049; }
+.btn:focus-visible { box-shadow: 0 0 0 3px #38bdf8; }
+.btn-primary { background: #0284c7; border-color: #0ea5e9; color: #fff; }
+.btn-primary:hover { background: #0ea5e9; }
+.btn[disabled] { opacity: .5; pointer-events: none; }
+
+/* Navegación lateral */
+.nav-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: .15rem;
+  padding: .55rem .25rem; font-size: .7rem; color: #94a3b8; border-radius: .6rem; outline: none;
+}
+@media (min-width: 768px) {
+  .nav-btn { flex: none; flex-direction: row; gap: .75rem; padding: .7rem 1rem; font-size: .9rem; }
+}
+.nav-ico { font-size: 1.15rem; line-height: 1; }
+.nav-btn:hover { color: #e2e8f0; background: rgba(255,255,255,.04); }
+.nav-btn.active { color: #fff; background: rgba(14,165,233,.15); }
+.nav-btn:focus-visible { box-shadow: inset 0 0 0 2px #38bdf8; color: #fff; }
+
+/* Tarjetas del catálogo (grid virtual) */
+.card { position: absolute; top: 0; left: 0; padding: .35rem; outline: none; contain: layout size style; }
+.card-in {
+  height: 100%; display: flex; flex-direction: column; border-radius: .6rem; overflow: hidden;
+  background: #111827; border: 1px solid rgba(255,255,255,.05); transition: transform .12s, border-color .12s;
+}
+.card:hover .card-in { border-color: rgba(56,189,248,.5); }
+.card:focus .card-in { transform: scale(1.04); border-color: #38bdf8; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.card-art { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #0d1320; position: relative; }
+.card-art img { position: relative; width: 100%; height: 100%; }
+.card-art.logo img { object-fit: contain; padding: .75rem; }
+.card-art.poster img { object-fit: cover; }
+.card-fallback { font-weight: 700; font-size: 1.4rem; color: #334155; }
+.card-name { padding: .4rem .55rem; font-size: .78rem; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-badge { position: absolute; top: .35rem; left: .35rem; font-size: .65rem; padding: .05rem .35rem; border-radius: .3rem; background: rgba(0,0,0,.65); color: #cbd5e1; }
+
+/* OSD */
+.osd-layer { transition: opacity .25s; }
+.osd-hidden .osd-layer { opacity: 0; pointer-events: none; }
+.osd-hidden { cursor: none; }
+.osd-btn {
+  width: 2.75rem; height: 2.75rem; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9999px; font-size: 1.1rem; color: #fff; background: rgba(255,255,255,.08); outline: none;
+}
+.osd-btn:hover { background: rgba(255,255,255,.18); }
+.osd-btn:focus-visible { box-shadow: 0 0 0 3px #38bdf8; background: rgba(56,189,248,.25); }
+.osd-menu button { display: block; width: 100%; text-align: left; padding: .5rem .9rem; font-size: .85rem; border-radius: .4rem; outline: none; }
+.osd-menu button:hover, .osd-menu button:focus { background: rgba(56,189,248,.2); }
+.osd-menu button[aria-checked="true"]::before { content: '✓ '; color: #38bdf8; }
+input[type=range].seek { width: 100%; accent-color: #0ea5e9; height: 4px; }
+
+.spinner {
+  width: 3rem; height: 3rem; border-radius: 9999px; border: 3px solid rgba(255,255,255,.15);
+  border-top-color: #38bdf8; animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+video::cue { background: rgba(0,0,0,.6); font-size: 1.15em; }

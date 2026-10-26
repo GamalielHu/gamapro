@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f17">
+  <meta name="referrer" content="no-referrer">
+  <title>GamaPro</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: { 900: '#0b0f17', 800: '#111827', 700: '#1a2233', 600: '#243049' },
+            brand: { 400: '#38bdf8', 500: '#0ea5e9', 600: '#0284c7' }
+          }
+        }
+      }
+    };
+  </script>
+  <script type="importmap">
+    {
+      "imports": {
+        "hls.js": "https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.mjs",
+        "idb-keyval": "https://cdn.jsdelivr.net/npm/idb-keyval@6.2.1/+esm"
+      }
+    }
+  </script>
+  <link rel="modulepreload" href="src/main.js">
+  <link rel="stylesheet" href="src/styles.css">
+</head>
+<body class="h-full bg-ink-900 text-slate-100 antialiased overflow-hidden">
+
+  <!-- Login -->
+  <section id="login-view" class="hidden h-full overflow-y-auto"></section>
+
+  <!-- App -->
+  <div id="app-view" class="hidden h-full flex flex-col md:flex-row">
+    <aside class="order-last md:order-first shrink-0 md:w-56 bg-ink-800/90 border-t md:border-t-0 md:border-r border-white/5 flex md:flex-col">
+      <div class="hidden md:flex items-center gap-2 px-5 h-16 text-lg font-bold tracking-tight">
+        <span class="inline-block w-2.5 h-2.5 rounded-full bg-brand-500"></span>Gama<span class="text-brand-400 -ml-2">Pro</span>
+      </div>
+      <nav id="nav" class="flex md:flex-col flex-1 md:flex-none md:px-3 md:gap-1">
+        <button data-view="live" class="nav-btn"><span class="nav-ico">📺</span><span>Live TV</span></button>
+        <button data-view="movies" class="nav-btn"><span class="nav-ico">🎬</span><span>Películas</span></button>
+        <button data-view="series" class="nav-btn"><span class="nav-ico">🎞️</span><span>Series</span></button>
+        <button data-view="settings" class="nav-btn"><span class="nav-ico">⚙️</span><span>Ajustes</span></button>
+      </nav>
+      <div id="account-box" class="hidden md:block mt-auto px-5 py-4 text-xs text-slate-400 leading-relaxed"></div>
+    </aside>
+
+    <main class="flex-1 flex flex-col min-w-0 min-h-0">
+      <header id="catalog-header" class="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-white/5">
+        <h1 id="view-title" class="text-lg font-semibold mr-auto">Live TV</h1>
+        <select id="category-select" class="field max-w-[14rem]" aria-label="Categoría"></select>
+        <input id="search-input" type="search" class="field w-44 sm:w-64" placeholder="Buscar…" autocomplete="off" spellcheck="false" aria-label="Buscar">
+        <span id="count-label" class="text-xs text-slate-500 tabular-nums"></span>
+      </header>
+      <div id="content" class="relative flex-1 min-h-0">
+        <div id="catalog-root" class="absolute inset-0"></div>
+        <div id="settings-root" class="hidden absolute inset-0 overflow-y-auto"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Reproductor fullscreen -->
+  <div id="player" class="hidden fixed inset-0 z-50 bg-black" tabindex="-1">
+    <video id="video" class="w-full h-full bg-black" playsinline preload="auto"></video>
+    <div id="osd" class="absolute inset-0"></div>
+  </div>
+
+  <div id="toast" class="pointer-events-none fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center gap-2"></div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

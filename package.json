@@ -1,0 +1,13 @@
+{
+  "name": "gamapro",
+  "version": "0.1.0",
+  "description": "Cliente web IPTV ultraligero para Xtream Codes",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
