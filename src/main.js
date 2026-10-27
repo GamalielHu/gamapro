@@ -25,11 +25,14 @@ const settings = loadSettings();
 configureProxy({ url: settings.proxyUrl || getProxy().url, mode: settings.proxyMode });
 
 // ---------- fuentes de reproducción (orden = prioridad de fallback) ----------
-function withProxyFallback(direct) {
+function withProxyFallback(direct, { vod = false } = {}) {
   if (!proxyEnabled()) return direct;
-  const proxied = direct.filter((s) => s.kind !== 'native' || s.url.startsWith('http:')).map((s) => ({ ...s, proxy: true }));
+  // Todas las fuentes, también las https: el panel puede redirigir a http://IP (bloqueado en página https).
+  const proxied = direct.map((s) => ({ ...s, proxy: true }));
   // Si el panel ya necesitó el proxy (CORS, http en página https), no perder tiempo con intentos directos.
-  return needsProxy(direct[0]?.url || '') ? proxied : [...direct, ...proxied];
+  const list = needsProxy(direct[0]?.url || '') ? proxied : [...direct, ...proxied];
+  // VOD: probar primero el archivo (directo y vía proxy); HLS solo como último recurso.
+  return vod ? [...list.filter((s) => s.kind === 'native'), ...list.filter((s) => s.kind !== 'native')] : list;
 }
 
 function buildSources(client, section, item) {
@@ -60,7 +63,7 @@ function buildSources(client, section, item) {
       { kind: 'native', url: alt },
       { kind: 'hls', url: main.replace(/\.[^./]+$/, '.m3u8') },
     ];
-  return withProxyFallback(list);
+  return withProxyFallback(list, { vod: true });
 }
 
 // ---------- reproductor ----------
