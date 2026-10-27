@@ -1,0 +1,13 @@
+# Render (render.com): app + proxy con IP de salida fija, sin las limitaciones de
+# Cloudflare Workers (IPs directas, servidores que bloquean a Cloudflare).
+services:
+  - type: web
+    name: gamapro
+    runtime: node
+    plan: free
+    buildCommand: "true"
+    startCommand: node server.mjs
+    healthCheckPath: /proxy/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0

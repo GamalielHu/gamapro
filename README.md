@@ -28,6 +28,13 @@ Opcional: en el Worker, **Settings → Variables**, `ALLOW_HOSTS=panel.tv` limit
 
 **Instalar:** iPad/iPhone → Safari → Compartir → *Agregar a inicio*. Android → Chrome → ⋮ → *Instalar app*.
 
+## Alternativa: Render (si algunos canales dan 403 en Cloudflare)
+
+Algunos servidores de video rechazan a Cloudflare. En Render el proxy sale por una IP fija y se conecta directo a las IPs de los servidores.
+
+1. Cuenta gratis en [render.com](https://render.com) → **New → Blueprint** → elige el repo `gamapro` → **Apply**.
+2. Queda en `https://gamapro-xxxx.onrender.com` (la app completa con su proxy). El plan gratis se duerme tras 15 min sin uso y tarda ~30 s en despertar.
+
 ## Estructura
 
 | Ruta | Rol |

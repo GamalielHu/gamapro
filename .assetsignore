@@ -11,3 +11,4 @@ README.md
 .assetsignore
 *.log
 iniciar.bat
+render.yaml
