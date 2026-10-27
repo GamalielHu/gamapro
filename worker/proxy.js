@@ -6,6 +6,7 @@
  *   GET /proxy?url=<m3u8>&mode=proxy    → además reescribe el playlist para que
  *                                         cada segmento también pase por el proxy
  *                                         (reproductor nativo de Safari/iPad)
+ *   GET /proxy?url=<archivo>&dl=<nombre> → igual, pero como descarga (Content-Disposition)
  *   GET /proxy/health                   → "gamapro-proxy"
  *   GET /proxy/debug?url=<destino>      → JSON con la cadena de redirecciones y la
  *                                         respuesta del panel vista desde el proxy
@@ -130,6 +131,11 @@ export async function handleProxy(request, { allowHosts = [], userAgent = DEFAUL
     out.set('content-type', 'application/vnd.apple.mpegurl');
     out.set('cache-control', 'no-cache');
     return new Response(request.method === 'HEAD' ? null : body, { status: upstream.status, headers: out });
+  }
+  const dl = self.searchParams.get('dl');
+  if (dl) {
+    const safe = dl.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 150) || 'video';
+    out.set('content-disposition', `attachment; filename="${safe.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safe)}`);
   }
   return new Response(request.method === 'HEAD' ? null : upstream.body, { status: upstream.status, headers: out });
 }

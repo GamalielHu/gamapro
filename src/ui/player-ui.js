@@ -7,9 +7,21 @@
  * VOD:   ←/→ → ±10 s
  * Todos: Enter/OK → mostrar OSD / activar botón · Espacio → pausa
  *        Esc/Back → cerrar menú o salir · A = audio · S = subtítulos · F = pantalla completa
+ *        Z = formato de imagen · D = descargar (películas y episodios)
  */
 import { h, esc, fmtTime, KEY, toast } from './dom.js';
 import { proxyDebugUrl } from '../services/xtream.js';
+import { loadSettings, saveSettings } from '../services/cache.js';
+import { KeepAwake } from '../player/wakelock.js';
+
+/** Formatos de imagen: se recorren con el botón ▭ o la tecla Z. */
+const ASPECTS = [
+  { id: 'contain', label: 'Ajustar' },
+  { id: 'cover', label: 'Llenar (recorta bordes)' },
+  { id: 'fill', label: 'Estirar' },
+  { id: '16:9', label: '16:9' },
+  { id: '4:3', label: '4:3' },
+];
 
 const HIDE_MS = 3500;
 const ZAP_MS = 350;
@@ -21,8 +33,10 @@ export class PlayerUI {
    *           resolve: (ctx:{section:string,item:object}) => {title:string, sources:Array, live:boolean},
    *           onClose?: Function }} opts
    */
-  constructor({ root, osd, engine, resolve, onClose }) {
-    Object.assign(this, { root, osd, engine, resolve, onClose });
+  constructor({ root, osd, engine, resolve, onClose, onDownload }) {
+    Object.assign(this, { root, osd, engine, resolve, onClose, onDownload });
+    this.keepAwake = new KeepAwake();
+    this.aspect = loadSettings().aspect || 'contain';
     this.video = engine.video;
     this.ctx = null;
     this.hideTimer = 0;
@@ -66,6 +80,8 @@ export class PlayerUI {
             <button class="osd-btn" data-act="mute" title="Silencio">🔊</button>
             <button class="osd-btn" data-act="audio" title="Audio (A)">🎧</button>
             <button class="osd-btn" data-act="subs" title="Subtítulos (S)">CC</button>
+            <button class="osd-btn" data-act="aspect" title="Formato de imagen (Z)">▭</button>
+            <button class="osd-btn" data-act="download" title="Descargar (D)">⬇</button>
             <button class="osd-btn" data-act="fs" title="Pantalla completa (F)">⛶</button>
             <button class="osd-btn" data-act="close" title="Salir (Esc)">✕</button>
           </div>
@@ -100,7 +116,8 @@ export class PlayerUI {
     video.addEventListener('durationchange', () => this.updateTime());
     video.addEventListener('volumechange', () => { el.mute.textContent = video.muted ? '🔇' : '🔊'; });
     video.addEventListener('play', () => { el.toggle.textContent = '⏸'; });
-    video.addEventListener('pause', () => { el.toggle.textContent = '▶'; this.showOsd(true); });
+    video.addEventListener('playing', () => this.keepAwake.enable());
+    video.addEventListener('pause', () => { el.toggle.textContent = '▶'; this.showOsd(true); this.keepAwake.disable(); });
 
     engine.addEventListener('state', (e) => {
       const s = e.detail.state;
@@ -130,7 +147,9 @@ export class PlayerUI {
     this.lastFocus = document.activeElement;
     this.root.classList.remove('hidden');
     this.root.focus();
-    if (!document.fullscreenElement) this.root.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => {});
+    this.applyAspect();
+    this.keepAwake.enable();
+    if (!this.isFullscreen()) this.enterFullscreen(false);
     this.playCurrent();
     this.startClock();
     this.startGamepad();
@@ -144,8 +163,9 @@ export class PlayerUI {
     cancelAnimationFrame(this.padFrame);
     this.closeMenu();
     this.engine.destroy();
+    this.keepAwake.disable();
     this.root.classList.add('hidden');
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    this.exitFullscreen();
     this.ctx = null;
     this.onClose?.();
     this.lastFocus?.focus?.();
@@ -158,6 +178,7 @@ export class PlayerUI {
     this.el.title.textContent = title;
     this.el.seekRow.classList.toggle('hidden', live);
     this.ui.querySelectorAll('[data-act="back10"],[data-act="fwd10"]').forEach((b) => b.classList.toggle('hidden', live));
+    this.ui.querySelector('[data-act="download"]').classList.toggle('hidden', live || !this.onDownload);
     const multi = this.ctx.list?.length > 1;
     this.ui.querySelectorAll('[data-act="prev"],[data-act="next"]').forEach((b) => b.classList.toggle('hidden', !multi));
     this.engine.load(sources, { live });
@@ -210,11 +231,56 @@ export class PlayerUI {
       case 'audio': this.toggleMenu('audio'); break;
       case 'subs': this.toggleMenu('subs'); break;
       case 'fs':
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-        else this.root.requestFullscreen?.().catch(() => {});
+        if (this.isFullscreen()) this.exitFullscreen();
+        else this.enterFullscreen(true);
+        break;
+      case 'aspect': this.cycleAspect(); break;
+      case 'download':
+        if (!this.live && this.onDownload) this.onDownload(this.ctx);
         break;
       case 'close': this.close(); break;
     }
+  }
+
+  // ---------- pantalla completa ----------
+  isFullscreen() {
+    return Boolean(document.fullscreenElement || document.webkitFullscreenElement || this.video.webkitDisplayingFullscreen);
+  }
+
+  /** iPad: Fullscreen API (con o sin prefijo). iPhone: solo existe la del propio <video>
+   *  (reproductor de iOS), que se usa únicamente si el usuario lo pide. */
+  enterFullscreen(userAsked) {
+    const r = this.root;
+    if (r.requestFullscreen) return r.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+    if (r.webkitRequestFullscreen) return r.webkitRequestFullscreen();
+    if (userAsked && this.video.webkitEnterFullscreen) this.video.webkitEnterFullscreen();
+  }
+
+  exitFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else if (document.webkitFullscreenElement) document.webkitExitFullscreen?.();
+    else if (this.video.webkitDisplayingFullscreen) this.video.webkitExitFullscreen?.();
+  }
+
+  // ---------- formato de imagen ----------
+  applyAspect() {
+    const s = this.video.style;
+    s.cssText = '';
+    if (this.aspect.includes(':')) {
+      const [w, hh] = this.aspect.split(':').map(Number);
+      s.cssText = `position:absolute;inset:0;margin:auto;width:min(100%, calc(100dvh * ${w} / ${hh}));height:auto;aspect-ratio:${w}/${hh};object-fit:fill`;
+    } else {
+      s.objectFit = this.aspect;
+    }
+  }
+
+  cycleAspect() {
+    const i = ASPECTS.findIndex((a) => a.id === this.aspect);
+    const next = ASPECTS[(i + 1) % ASPECTS.length];
+    this.aspect = next.id;
+    saveSettings({ aspect: next.id });
+    this.applyAspect();
+    toast(`Imagen: ${next.label}`, { ms: 1500 });
   }
 
   seekBy(sec) {
@@ -353,6 +419,8 @@ export class PlayerUI {
       case 's': case 'S': return this.action('subs');
       case 'f': case 'F': return this.action('fs');
       case 'm': case 'M': return this.action('mute');
+      case 'z': case 'Z': return this.action('aspect');
+      case 'd': case 'D': return this.action('download');
     }
     if (KEY.ok.has(k) && !inControls && !menuOpen) {
       e.preventDefault();

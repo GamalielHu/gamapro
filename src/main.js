@@ -1,5 +1,5 @@
 /** Arranque de GamaPro: sesión, navegación y conexión catálogo ↔ reproductor. */
-import { XtreamClient, configureProxy, getProxy, proxyEnabled, needsProxy } from './services/xtream.js';
+import { XtreamClient, configureProxy, getProxy, proxyEnabled, needsProxy, downloadUrl } from './services/xtream.js';
 import { loadCredentials, saveCredentials, clearCredentials, loadSettings, accountKey } from './services/cache.js';
 import { PlayerEngine } from './player/engine.js';
 import { renderLogin } from './ui/login.js';
@@ -66,6 +66,22 @@ function buildSources(client, section, item) {
   return withProxyFallback(list, { vod: true });
 }
 
+// ---------- descargas (películas y episodios) ----------
+function startDownload({ section, item }) {
+  if (section !== 'movies' && section !== 'episode') return;
+  const ext = (item.ext || 'mp4').toLowerCase();
+  const src = section === 'movies' ? state.client.vodUrl(item.id, ext) : state.client.episodeUrl(item.id, ext);
+  const filename = `${item.name}.${ext}`.replace(/[\\/:*?"<>|]+/g, ' ');
+  const a = document.createElement('a');
+  a.href = downloadUrl(src, filename);
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.append(a);
+  a.click();
+  a.remove();
+  toast(`Descargando "${item.name}"… En iPad/iPhone queda en la app Archivos → Descargas.`, { ms: 5000 });
+}
+
 // ---------- reproductor ----------
 const engine = new PlayerEngine($('#video'));
 const playerUI = new PlayerUI({
@@ -77,6 +93,7 @@ const playerUI = new PlayerUI({
     sources: buildSources(state.client, section, item),
     live: section === 'live',
   }),
+  onDownload: startDownload,
 });
 
 // ---------- catálogo ----------
@@ -87,6 +104,7 @@ const catalog = new Catalog({
   countLabel: $('#count-label'),
   titleEl: $('#view-title'),
   onPlay: (ctx) => playerUI.open(ctx),
+  onDownload: startDownload,
   onEdge: () => els.nav.querySelector('.active')?.focus(),
 });
 

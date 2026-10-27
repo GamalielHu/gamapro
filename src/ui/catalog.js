@@ -208,8 +208,8 @@ export class Catalog {
    * @param {{ root: HTMLElement, search: HTMLInputElement, category: HTMLSelectElement,
    *           countLabel: HTMLElement, titleEl: HTMLElement, onPlay: Function, onEdge?: Function }} opts
    */
-  constructor({ root, search, category, countLabel, titleEl, onPlay, onEdge }) {
-    Object.assign(this, { root, search, category, countLabel, titleEl, onPlay });
+  constructor({ root, search, category, countLabel, titleEl, onPlay, onEdge, onDownload }) {
+    Object.assign(this, { root, search, category, countLabel, titleEl, onPlay, onDownload });
     this.client = null;
     this.section = null;
     this.data = new Map(); // section -> { categories, items }
@@ -353,16 +353,21 @@ export class Catalog {
       list.innerHTML = '';
       eps.forEach((ep, idx) => {
         const row = h(`
-          <button class="btn !justify-start text-left !font-normal w-full">
-            <span class="text-brand-400 tabular-nums w-10 shrink-0">E${esc(ep.episode_num ?? idx + 1)}</span>
-            <span class="truncate">${esc(ep.title || `Episodio ${idx + 1}`)}</span>
-          </button>`);
-        row.addEventListener('click', () => {
-          const items = eps.map((e, i) => ({
-            id: e.id, name: `${series.name} · T${s}E${e.episode_num ?? i + 1}`, ext: e.container_extension || 'mp4', icon: e.info?.movie_image,
-          }));
-          this.onPlay({ section: 'episode', item: items[idx], list: items, index: idx });
+          <div class="flex gap-2">
+            <button data-play class="btn !justify-start text-left !font-normal flex-1 min-w-0">
+              <span class="text-brand-400 tabular-nums w-10 shrink-0">E${esc(ep.episode_num ?? idx + 1)}</span>
+              <span class="truncate">${esc(ep.title || `Episodio ${idx + 1}`)}</span>
+            </button>
+            ${this.onDownload ? '<button data-dl class="btn shrink-0" title="Descargar" aria-label="Descargar episodio">⬇</button>' : ''}
+          </div>`);
+        const items = () => eps.map((e, i) => ({
+          id: e.id, name: `${series.name} · T${s}E${e.episode_num ?? i + 1}`, ext: e.container_extension || 'mp4', icon: e.info?.movie_image,
+        }));
+        row.querySelector('[data-play]').addEventListener('click', () => {
+          const all = items();
+          this.onPlay({ section: 'episode', item: all[idx], list: all, index: idx });
         });
+        row.querySelector('[data-dl]')?.addEventListener('click', () => this.onDownload({ section: 'episode', item: items()[idx] }));
         list.append(row);
       });
     };

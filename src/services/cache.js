@@ -20,6 +20,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   proxyMode: 'auto', // off | auto | always
   liveFormat: 'm3u8', // m3u8 | ts
   cacheHours: 12,
+  aspect: 'contain', // contain | cover | fill | 16:9 | 4:3
 });
 
 // ---------- Ajustes ----------

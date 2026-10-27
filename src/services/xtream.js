@@ -65,6 +65,13 @@ export function proxifyPlaylist(target) {
   return url !== target && isOwnProxy() ? `${url}&mode=proxy` : url;
 }
 
+/** Enlace de descarga: vía el proxy de GamaPro (evita bloqueos y fuerza "guardar");
+ *  sin proxy propio, el enlace directo del panel. */
+export function downloadUrl(target, filename) {
+  if (!isOwnProxy() || !proxyEnabled()) return target;
+  return `${proxify(target)}&dl=${encodeURIComponent(filename)}`;
+}
+
 /** URL de diagnóstico del proxy de GamaPro (null con proxies de terceros). */
 export function proxyDebugUrl(target) {
   if (!isOwnProxy()) return null;
