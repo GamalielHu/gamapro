@@ -33,8 +33,8 @@ export class PlayerUI {
    *           resolve: (ctx:{section:string,item:object}) => {title:string, sources:Array, live:boolean},
    *           onClose?: Function }} opts
    */
-  constructor({ root, osd, engine, resolve, onClose, onDownload }) {
-    Object.assign(this, { root, osd, engine, resolve, onClose, onDownload });
+  constructor({ root, osd, engine, resolve, onClose, onDownload, onPrefetch }) {
+    Object.assign(this, { root, osd, engine, resolve, onClose, onDownload, onPrefetch });
     this.keepAwake = new KeepAwake();
     this.aspect = loadSettings().aspect || 'contain';
     this.video = engine.video;
@@ -116,7 +116,10 @@ export class PlayerUI {
     video.addEventListener('durationchange', () => this.updateTime());
     video.addEventListener('volumechange', () => { el.mute.textContent = video.muted ? '🔇' : '🔊'; });
     video.addEventListener('play', () => { el.toggle.textContent = '⏸'; });
-    video.addEventListener('playing', () => this.keepAwake.enable());
+    video.addEventListener('playing', () => {
+      this.keepAwake.enable();
+      this.prefetchNeighbors();
+    });
     video.addEventListener('pause', () => { el.toggle.textContent = '▶'; this.showOsd(true); this.keepAwake.disable(); });
 
     engine.addEventListener('state', (e) => {
@@ -182,6 +185,13 @@ export class PlayerUI {
     const multi = this.ctx.list?.length > 1;
     this.ui.querySelectorAll('[data-act="prev"],[data-act="next"]').forEach((b) => b.classList.toggle('hidden', !multi));
     this.engine.load(sources, { live });
+  }
+
+  /** Con un canal ya en marcha, precargar el anterior y el siguiente: CH+/CH- arrancan al instante. */
+  prefetchNeighbors() {
+    const { list, index, section } = this.ctx || {};
+    if (!this.live || !this.onPrefetch || !list || list.length < 2) return;
+    for (const d of [1, -1]) this.onPrefetch({ section, item: list[(index + d + list.length) % list.length] });
   }
 
   /** Zapping: el título cambia al instante, la carga espera a que se deje de pulsar. */

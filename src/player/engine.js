@@ -8,16 +8,28 @@
  * - Cada cambio de fuente destruye la instancia anterior (hls.destroy(),
  *   unload de mpegts, src del <video> y blobs revocados) para no filtrar memoria.
  *
+ * - TTFF: búfer inicial corto, calidad mínima al arrancar (sube a la máxima que
+ *   permita el ancho de banda tras 2 s estables) y manifiestos precargados.
+ *
  * Eventos (EventTarget): 'source', 'state', 'tracks', 'error', 'autoplay-muted'.
  */
-import Hls from 'hls.js';
+import Hls, { LoadStats } from 'hls.js';
 import { proxify, proxifyPlaylist, isProxied } from '../services/xtream.js';
 
 const MPEGTS_URL = 'https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/+esm';
 
+/** Arranque agresivo (TTFF bajo): búfer inicial corto, prefetch del primer fragmento,
+ *  demux progresivo y calidad baja al inicio; sube de calidad tras 2 s estables. */
 export const HLS_CONFIG = Object.freeze({
-  maxBufferLength: 30,
-  maxMaxBufferLength: 60,
+  enableWorker: true,
+  lowLatencyMode: true,
+  startFragPrefetch: true,
+  progressive: true,
+  maxBufferLength: 15,
+  maxMaxBufferLength: 30,
+  maxBufferSize: 30 * 1000 * 1000,
+  startLevel: 0,
+  backBufferLength: 20,
   liveSyncDurationCount: 3,
   manifestLoadingMaxRetry: 5,
   levelLoadingMaxRetry: 5,
@@ -28,35 +40,97 @@ export const HLS_CONFIG = Object.freeze({
   manifestLoadingTimeOut: 10000,
   levelLoadingTimeOut: 10000,
   fragLoadingTimeOut: 20000,
-  backBufferLength: 30,
-  maxBufferSize: 60 * 1000 * 1000,
   maxBufferHole: 0.5,
   nudgeMaxRetry: 10,
   liveDurationInfinity: true,
   maxLiveSyncPlaybackRate: 1.5,
-  lowLatencyMode: true,
-  startFragPrefetch: true,
   capLevelToPlayerSize: true,
-  enableWorker: true,
 });
 
-/** Loader de hls.js que pasa cada petición por el proxy pero conserva la URL original
- *  como base, para que los segmentos relativos del playlist se resuelvan bien. */
-function makeProxyLoader() {
-  const Base = Hls.DefaultConfig.loader;
-  return class ProxyLoader extends Base {
+const QUALITY_UP_MS = 2000;
+
+// ---------- precarga predictiva de manifiestos (zapping rápido) ----------
+const PREFETCH_TTL_MS = 6000; // un playlist en vivo más viejo ya no sirve de arranque
+const PREFETCH_MAX = 8;
+const prefetched = new Map(); // url original → { text, url (final), t } | { pending }
+
+/**
+ * Descarga el manifiesto HLS en memoria sin reproducir. Si el usuario abre ese
+ * canal en los próximos segundos, hls.js lo recibe al instante (0 ms de red).
+ * @param {string} streamUrl  URL .m3u8 original
+ * @param {{ proxy?: boolean }} [opts]
+ */
+export function prefetchNextStream(streamUrl, { proxy = false } = {}) {
+  if (!streamUrl) return;
+  const hit = prefetched.get(streamUrl);
+  if (hit && (hit.pending || Date.now() - hit.t < PREFETCH_TTL_MS)) return;
+  const entry = { pending: true };
+  prefetched.set(streamUrl, entry);
+  while (prefetched.size > PREFETCH_MAX) prefetched.delete(prefetched.keys().next().value);
+  const url = proxy ? proxify(streamUrl) : streamUrl;
+  fetch(url, { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
+    .then(async (res) => {
+      const text = res.ok ? await res.text() : '';
+      if (!text.startsWith('#EXTM3U')) throw new Error('no es un playlist');
+      // Vía proxy, el playlist ya viene con URLs absolutas: la base es la URL original.
+      prefetched.set(streamUrl, { text, url: proxy ? streamUrl : res.url || streamUrl, t: Date.now() });
+    })
+    .catch(() => { if (prefetched.get(streamUrl) === entry) prefetched.delete(streamUrl); });
+}
+
+function takePrefetched(url) {
+  const hit = prefetched.get(url);
+  if (!hit || hit.pending) return null;
+  prefetched.delete(url);
+  return Date.now() - hit.t < PREFETCH_TTL_MS ? hit : null;
+}
+
+/**
+ * Loader de hls.js por composición (no herencia) para envolver el loader que hls.js
+ * elija en tiempo de ejecución (FetchLoader progresivo o XhrLoader):
+ *  - prefetch: sirve el manifiesto precargado sin tocar la red.
+ *  - proxy: pasa cada petición por el proxy y conserva la URL original como base,
+ *    para que los segmentos relativos del playlist se resuelvan bien.
+ */
+function makeLoader({ proxy = false, prefetch = false, Base = null } = {}) {
+  return class GamaLoader {
+    constructor(config) {
+      this.inner = new (Base || config.loader)(config);
+      this.stats = this.inner.stats;
+      this.context = null;
+    }
+
     load(context, config, callbacks) {
+      this.context = context;
       const original = context.url;
-      if (!isProxied(original)) context.url = proxify(original);
-      super.load(context, config, {
+      const hit = prefetch && context.type === 'manifest' ? takePrefetched(original) : null;
+      if (hit) {
+        const now = performance.now();
+        const stats = new LoadStats();
+        stats.loading = { start: now, first: now, end: now };
+        stats.loaded = stats.total = hit.text.length;
+        this.stats = stats;
+        setTimeout(() => callbacks.onSuccess({ url: hit.url, data: hit.text, code: 200 }, stats, context, null), 0);
+        return;
+      }
+      if (proxy && !isProxied(original)) context.url = proxify(original);
+      this.inner.load(context, config, {
         ...callbacks,
         onSuccess: (response, stats, ctx, net) => {
-          response.url = original;
-          ctx.url = original;
+          if (proxy) {
+            response.url = original;
+            ctx.url = original;
+          }
           callbacks.onSuccess(response, stats, ctx, net);
         },
       });
+      this.stats = this.inner.stats;
     }
+
+    abort() { this.inner.abort(); }
+    destroy() { this.inner.destroy(); }
+    getCacheAge() { return this.inner.getCacheAge?.() ?? null; }
+    getResponseHeader(name) { return this.inner.getResponseHeader?.(name) ?? null; }
   };
 }
 
@@ -91,14 +165,16 @@ export class PlayerEngine extends EventTarget {
   #stallSince = 0;
   #blobs = new Set();
   #attempts = [];
+  #qualityTimer = 0;
+  #qualityRaised = false;
   live = false;
 
   constructor(video) {
     super();
     this.#video = video;
     video.addEventListener('error', () => this.#onNativeError());
-    video.addEventListener('playing', () => { this.#retries = 0; this.#emit('state', { state: 'playing' }); });
-    video.addEventListener('waiting', () => this.#emit('state', { state: 'buffering' }));
+    video.addEventListener('playing', () => { this.#retries = 0; this.#emit('state', { state: 'playing' }); this.#scheduleQualityUp(); });
+    video.addEventListener('waiting', () => { clearTimeout(this.#qualityTimer); this.#emit('state', { state: 'buffering' }); });
     video.addEventListener('pause', () => this.#emit('state', { state: 'paused' }));
     video.addEventListener('loadedmetadata', () => this.#emit('tracks'));
     video.audioTracks?.addEventListener?.('addtrack', () => this.#emit('tracks'));
@@ -190,6 +266,23 @@ export class PlayerEngine extends EventTarget {
     this.#start();
   }
 
+  /** Tras 2 s de reproducción continua, saltar a la mayor calidad que soporte la red. */
+  #scheduleQualityUp() {
+    clearTimeout(this.#qualityTimer);
+    const hls = this.#hls;
+    if (!hls || this.#qualityRaised || hls.levels.length < 2) return;
+    this.#qualityTimer = setTimeout(() => {
+      if (this.#hls !== hls || this.#video.paused || !hls.autoLevelEnabled) return;
+      const bw = hls.bandwidthEstimate;
+      let target = hls.levels.length - 1;
+      if (Number.isFinite(bw) && bw > 0) {
+        while (target > 0 && hls.levels[target].bitrate > bw * 0.85) target--;
+      }
+      this.#qualityRaised = true;
+      if (target > hls.currentLevel) hls.nextLevel = target;
+    }, QUALITY_UP_MS);
+  }
+
   #restart(reason) {
     console.warn('[engine] reiniciando fuente:', reason);
     const token = ++this.#token;
@@ -203,7 +296,15 @@ export class PlayerEngine extends EventTarget {
       return this.#next('HLS no soportado');
     }
     const config = { ...HLS_CONFIG };
-    if (src.proxy) config.loader = makeProxyLoader();
+    if (src.proxy) {
+      // Todo (playlists, fragmentos, claves) por el proxy; el demux progresivo requiere
+      // el loader nativo de hls.js, así que vía proxy se usa XHR.
+      const Base = Hls.DefaultConfig.loader;
+      config.loader = makeLoader({ proxy: true, Base });
+      config.pLoader = makeLoader({ proxy: true, prefetch: true, Base });
+    } else {
+      config.pLoader = makeLoader({ prefetch: true });
+    }
     if (!this.live && this.startTime) config.startPosition = this.startTime;
     const hls = new Hls(config);
     this.#hls = hls;
@@ -212,6 +313,10 @@ export class PlayerEngine extends EventTarget {
     hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => this.#emit('tracks'));
     hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => this.#emit('tracks'));
     hls.on(Hls.Events.FRAG_LOADED, () => { this.#retries = 0; });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      // Si la calidad alta se atasca, volver a ABR automático.
+      if (!data.fatal && data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR && !hls.autoLevelEnabled) hls.nextLevel = -1;
+    });
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (token !== this.#token || this.#hls !== hls || !data.fatal) return;
       this.#onHlsFatal(hls, data, token);
@@ -340,6 +445,8 @@ export class PlayerEngine extends EventTarget {
 
   #teardown() {
     clearInterval(this.#watchdog);
+    clearTimeout(this.#qualityTimer);
+    this.#qualityRaised = false;
     clearTimeout(this.#retryTimer);
     if (this.#hls) {
       this.#hls.destroy();

@@ -1,7 +1,7 @@
 /** Arranque de GamaPro: sesión, navegación y conexión catálogo ↔ reproductor. */
 import { XtreamClient, configureProxy, getProxy, proxyEnabled, needsProxy, downloadUrl } from './services/xtream.js';
 import { loadCredentials, saveCredentials, clearCredentials, loadSettings, accountKey } from './services/cache.js';
-import { PlayerEngine } from './player/engine.js';
+import { PlayerEngine, prefetchNextStream } from './player/engine.js';
 import { renderLogin } from './ui/login.js';
 import { Catalog } from './ui/catalog.js';
 import { PlayerUI } from './ui/player-ui.js';
@@ -66,6 +66,14 @@ function buildSources(client, section, item) {
   return withProxyFallback(list, { vod: true });
 }
 
+// ---------- precarga predictiva (zapping rápido) ----------
+/** Precarga el manifiesto del canal que el usuario está mirando en la lista / el siguiente. */
+function prefetchFor({ section, item }) {
+  if (section !== 'live' || !item || !state.client) return;
+  const src = buildSources(state.client, section, item).find((s) => s.kind === 'hls');
+  if (src) prefetchNextStream(src.url, { proxy: Boolean(src.proxy) });
+}
+
 // ---------- descargas (películas y episodios) ----------
 function startDownload({ section, item }) {
   if (section !== 'movies' && section !== 'episode') return;
@@ -94,6 +102,7 @@ const playerUI = new PlayerUI({
     live: section === 'live',
   }),
   onDownload: startDownload,
+  onPrefetch: prefetchFor,
 });
 
 // ---------- catálogo ----------
@@ -105,6 +114,7 @@ const catalog = new Catalog({
   titleEl: $('#view-title'),
   onPlay: (ctx) => playerUI.open(ctx),
   onDownload: startDownload,
+  onPrefetch: prefetchFor,
   onEdge: () => els.nav.querySelector('.active')?.focus(),
 });
 

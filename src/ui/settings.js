@@ -1,6 +1,7 @@
 /** Vista de Ajustes: proxy CORS, formato de Live, caché y sesión. */
 import { configureProxy } from '../services/xtream.js';
 import { loadSettings, saveSettings, clearCatalogCache } from '../services/cache.js';
+import { catalogStore } from '../services/catalog-store.js';
 import { h, esc, toast } from './dom.js';
 
 export function renderSettings(root, { client, onReload, onLogout }) {
@@ -71,7 +72,7 @@ export function renderSettings(root, { client, onReload, onLogout }) {
   });
   view.querySelector('[data-reload]').addEventListener('click', () => onReload());
   view.querySelector('[data-clear]').addEventListener('click', async () => {
-    await clearCatalogCache();
+    await Promise.all([clearCatalogCache(), catalogStore.clear()]);
     toast('Caché vaciada', { type: 'ok' });
   });
   view.querySelector('[data-logout]').addEventListener('click', () => onLogout());

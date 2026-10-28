@@ -5,10 +5,11 @@
  * - Librerías de CDN (URLs con versión fija): caché primero.
  * La API del panel, el proxy y los streams nunca pasan por aquí.
  */
-const VERSION = 'gamapro-v3';
+const VERSION = 'gamapro-v4';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'src/styles.css', 'src/main.js',
   'src/services/xtream.js', 'src/services/cache.js', 'src/player/engine.js', 'src/player/wakelock.js', 'src/player/nosleep.mp4',
+  'src/services/catalog-store.js', 'src/workers/catalog-core.js', 'src/workers/catalog-parser.worker.js',
   'src/ui/dom.js', 'src/ui/login.js', 'src/ui/catalog.js', 'src/ui/player-ui.js', 'src/ui/settings.js',
   'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];

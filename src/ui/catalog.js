@@ -1,43 +1,44 @@
 /**
  * Catálogo con grid virtual: solo existen en el DOM las tarjetas visibles
  * (+ margen), así listas de 10.000+ canales no congelan la página.
- * Búsqueda en tiempo real, filtro por categoría y navegación con flechas.
+ * - Datos: descarga, parseo, caché comprimida y búsqueda en un Web Worker
+ *   (services/catalog-store.js): el hilo de la UI solo pinta.
+ * - Carátulas: IntersectionObserver con 200 px de margen, placeholder SVG
+ *   mientras cargan y fallback local inmediato si fallan (sin reintentos).
+ * - Precarga predictiva: tras 800 ms sobre un canal se precarga su manifiesto.
  */
-import { cached } from '../services/cache.js';
-import { h, esc, fold, debounce, KEY, toast } from './dom.js';
+import { cached, loadSettings } from '../services/cache.js';
+import { catalogStore } from '../services/catalog-store.js';
+import { h, esc, debounce, KEY, toast } from './dom.js';
 
 const OVERSCAN_ROWS = 3;
+const DWELL_MS = 800;
 
 const SECTIONS = {
-  live: {
-    title: 'Live TV',
-    layout: { minWidth: 150, itemHeight: 140, art: 'logo' },
-    categories: (c, o) => c.getLiveCategories(o),
-    streams: (c, o) => c.getLiveStreams(undefined, o),
-    norm: (s) => ({ id: s.stream_id, name: s.name || '', icon: s.stream_icon, cat: String(s.category_id ?? ''), num: s.num, epg: s.epg_channel_id }),
-  },
-  movies: {
-    title: 'Películas',
-    layout: { minWidth: 140, itemHeight: 250, art: 'poster' },
-    categories: (c, o) => c.getVodCategories(o),
-    streams: (c, o) => c.getVodStreams(undefined, o),
-    norm: (s) => ({ id: s.stream_id, name: s.name || '', icon: s.stream_icon, cat: String(s.category_id ?? ''), ext: s.container_extension || 'mp4', rating: s.rating }),
-  },
-  series: {
-    title: 'Series',
-    layout: { minWidth: 140, itemHeight: 250, art: 'poster' },
-    categories: (c, o) => c.getSeriesCategories(o),
-    streams: (c, o) => c.getSeries(undefined, o),
-    norm: (s) => ({ id: s.series_id, name: s.name || '', icon: s.cover, cat: String(s.category_id ?? ''), rating: s.rating }),
-  },
+  live: { title: 'Live TV', layout: { minWidth: 150, itemHeight: 140, art: 'logo' } },
+  movies: { title: 'Películas', layout: { minWidth: 140, itemHeight: 250, art: 'poster' } },
+  series: { title: 'Series', layout: { minWidth: 140, itemHeight: 250, art: 'poster' } },
 };
 
+const svg = (body) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${body}</svg>`)}`;
+/** Placeholder mientras descarga (≈200 bytes, sin red). */
+const PLACEHOLDER = svg('<rect width="64" height="64" fill="#0d1320"/><rect x="22" y="26" width="20" height="12" rx="2" fill="none" stroke="#1e293b" stroke-width="2"/>');
+/** Icono genérico cuando la carátula falla (404, CORS, etc.). */
+const FALLBACK = {
+  logo: svg('<rect width="64" height="64" fill="#0d1320"/><rect x="14" y="18" width="36" height="24" rx="4" fill="none" stroke="#334155" stroke-width="3"/><path d="M26 48h12" stroke="#334155" stroke-width="3" stroke-linecap="round"/>'),
+  poster: svg('<rect width="64" height="64" fill="#0d1320"/><rect x="18" y="14" width="28" height="36" rx="3" fill="none" stroke="#334155" stroke-width="3"/><path d="M28 26l10 6-10 6z" fill="#334155"/>'),
+};
+/** URLs que ya fallaron en esta sesión: no se vuelven a pedir. */
+const failedImages = new Set();
+
 export class VirtualGrid {
-  constructor(scroller, { renderItem, onActivate, onEdge }) {
+  constructor(scroller, { renderItem, onActivate, onEdge, onDwell }) {
     this.scroller = scroller;
     this.renderItem = renderItem;
     this.onActivate = onActivate;
     this.onEdge = onEdge;
+    this.onDwell = onDwell;
+    this.dwellTimer = 0;
     this.items = [];
     this.nodes = new Map();
     this.cols = 1;
@@ -60,8 +61,33 @@ export class VirtualGrid {
     });
     this.inner.addEventListener('focusin', (e) => {
       const node = e.target.closest('[data-i]');
-      if (node) this.focusIndex = Number(node.dataset.i);
+      if (!node) return;
+      this.focusIndex = Number(node.dataset.i);
+      this.dwell(this.focusIndex);
     });
+    this.inner.addEventListener('mouseover', (e) => {
+      const node = e.target.closest('[data-i]');
+      if (node && Number(node.dataset.i) !== this.dwellIndex) this.dwell(Number(node.dataset.i));
+    });
+    this.inner.addEventListener('mouseleave', () => { clearTimeout(this.dwellTimer); this.dwellIndex = -1; });
+
+    // Carga perezosa de carátulas con margen preventivo.
+    this.io = new IntersectionObserver((entries) => {
+      for (const { isIntersecting, target } of entries) {
+        if (!isIntersecting) continue;
+        this.io.unobserve(target);
+        const src = target.dataset.src;
+        if (src && !failedImages.has(src)) target.src = src;
+        else if (src) target.src = target.dataset.fallback;
+      }
+    }, { root: scroller, rootMargin: '200px 0px' });
+    // Fallback inmediato: un solo intento por URL, sin reintentos de red.
+    this.inner.addEventListener('error', (e) => {
+      const img = e.target;
+      if (img.tagName !== 'IMG' || !img.dataset.src || img.src === img.dataset.fallback) return;
+      failedImages.add(img.dataset.src);
+      img.src = img.dataset.fallback;
+    }, true);
     scroller.addEventListener('keydown', (e) => this.onKey(e));
   }
 
@@ -114,9 +140,20 @@ export class VirtualGrid {
     node.style.height = `${this.itemH}px`;
   }
 
+  /** Precarga predictiva: el ítem bajo el foco/puntero más de 800 ms. */
+  dwell(i) {
+    clearTimeout(this.dwellTimer);
+    this.dwellIndex = i;
+    if (!this.onDwell) return;
+    this.dwellTimer = setTimeout(() => { if (this.items[i]) this.onDwell(this.items[i], i); }, DWELL_MS);
+  }
+
   release(node) {
     const img = node.querySelector('img');
-    if (img) img.removeAttribute('src'); // cancela descargas pendientes
+    if (img) {
+      this.io.unobserve(img);
+      if (img.src !== img.dataset.fallback) img.removeAttribute('src'); // cancela descargas pendientes
+    }
     node.remove();
   }
 
@@ -137,6 +174,8 @@ export class VirtualGrid {
       const node = this.renderItem(this.items[i], i);
       node.dataset.i = i;
       node.tabIndex = -1;
+      const img = node.querySelector('img[data-src]');
+      if (img) this.io.observe(img);
       this.place(node, i);
       this.nodes.set(i, node);
       frag.append(node);
@@ -190,7 +229,7 @@ export class VirtualGrid {
 function renderCard(item, art) {
   const initials = esc(item.name.replace(/[^\p{L}\p{N} ]/gu, '').trim().slice(0, 2).toUpperCase() || '?');
   const img = item.icon
-    ? `<img src="${esc(item.icon)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.remove()">`
+    ? `<img src="${PLACEHOLDER}" data-src="${esc(item.icon)}" data-fallback="${FALLBACK[art]}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
     : '';
   const badge = item.num ? `<span class="card-badge">${esc(item.num)}</span>`
     : item.rating && Number(item.rating) > 0 ? `<span class="card-badge">★ ${esc(Number(item.rating).toFixed(1))}</span>` : '';
@@ -203,13 +242,27 @@ function renderCard(item, art) {
     </div>`);
 }
 
+/** Columnas del worker → objetos ligeros que usa el grid (una pasada, sin parseo). */
+function fromColumns(cols) {
+  const keys = Object.keys(cols);
+  const n = cols.id?.length || 0;
+  const items = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const it = {};
+    for (const k of keys) it[k] = cols[k][i];
+    items[i] = it;
+  }
+  return items;
+}
+
 export class Catalog {
   /**
    * @param {{ root: HTMLElement, search: HTMLInputElement, category: HTMLSelectElement,
    *           countLabel: HTMLElement, titleEl: HTMLElement, onPlay: Function, onEdge?: Function }} opts
    */
-  constructor({ root, search, category, countLabel, titleEl, onPlay, onEdge, onDownload }) {
-    Object.assign(this, { root, search, category, countLabel, titleEl, onPlay, onDownload });
+  constructor({ root, search, category, countLabel, titleEl, onPlay, onEdge, onDownload, onPrefetch }) {
+    Object.assign(this, { root, search, category, countLabel, titleEl, onPlay, onDownload, onPrefetch });
+    this.filterToken = 0;
     this.client = null;
     this.section = null;
     this.data = new Map(); // section -> { categories, items }
@@ -226,6 +279,7 @@ export class Catalog {
       renderItem: (item) => renderCard(item, SECTIONS[this.section].layout.art),
       onActivate: (item, index) => this.activate(item, index),
       onEdge: (dir) => (dir === 'up' ? this.search.focus() : onEdge?.(dir)),
+      onDwell: (item) => { if (this.section === 'live') this.onPrefetch?.({ section: 'live', item }); },
     });
 
     this.search.addEventListener('input', debounce(() => this.applyFilter(), 120));
@@ -257,13 +311,15 @@ export class Catalog {
       this.grid.setItems([]);
       this.setStatus('Cargando catálogo…');
       try {
-        const opts = { force };
-        const [categories, items] = await Promise.all([
-          cached(`${this.prefix}${section}:cats`, () => conf.categories(this.client), opts),
-          cached(`${this.prefix}${section}:items`, async () => (await conf.streams(this.client)).map(conf.norm), opts),
-        ]);
-        for (const it of items) it.q = fold(it.name);
-        this.data.set(section, { categories, items });
+        const res = await catalogStore.load({
+          section,
+          accountId: this.client.accountId,
+          creds: this.client.credentials,
+          ttlHours: loadSettings().cacheHours,
+          force,
+        });
+        this.data.set(section, { categories: res.categories, counts: res.counts, items: fromColumns(res.cols) });
+        if (res.stale) toast('Sin conexión con el panel: mostrando el catálogo guardado.');
       } catch (err) {
         if (token === this.loadToken) this.setStatus(`No se pudo cargar: ${err.message}`);
         return;
@@ -275,23 +331,31 @@ export class Catalog {
   }
 
   fillCategories() {
-    const { categories, items } = this.data.get(this.section);
-    const counts = new Map();
-    for (const it of items) counts.set(it.cat, (counts.get(it.cat) || 0) + 1);
+    const { categories, counts, items } = this.data.get(this.section);
     const opts = [`<option value="">Todas (${items.length})</option>`];
     for (const c of categories) {
-      const n = counts.get(String(c.category_id));
+      const n = counts[String(c.category_id)];
       if (n) opts.push(`<option value="${esc(c.category_id)}">${esc(c.category_name)} (${n})</option>`);
     }
     this.category.innerHTML = opts.join('');
   }
 
-  applyFilter() {
-    const entry = this.data.get(this.section);
+  /** El filtrado corre en el worker; respuestas viejas (tecleo rápido) se descartan. */
+  async applyFilter() {
+    const section = this.section;
+    const entry = this.data.get(section);
     if (!entry) return;
+    const token = ++this.filterToken;
     const cat = this.category.value;
-    const terms = fold(this.search.value).split(/\s+/).filter(Boolean);
-    this.filtered = entry.items.filter((it) => (!cat || it.cat === cat) && terms.every((t) => it.q.includes(t)));
+    const query = this.search.value;
+    let idx;
+    try {
+      idx = cat || query.trim() ? await catalogStore.filter(section, cat, query) : null;
+    } catch {
+      idx = null;
+    }
+    if (token !== this.filterToken || section !== this.section) return;
+    this.filtered = idx ? Array.from(idx, (i) => entry.items[i]) : entry.items;
     this.countLabel.textContent = `${this.filtered.length.toLocaleString()} ítems`;
     this.setStatus(this.filtered.length ? '' : 'Sin resultados');
     this.grid.setItems(this.filtered);
