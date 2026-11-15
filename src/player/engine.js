@@ -152,6 +152,8 @@ const STALL_VOD_MS = 15000;
 const START_LIVE_MS = 9000;
 const START_VOD_MS = 12000;
 const START_SLOW_MS = 25000;
+/** Fuentes que el servidor prepara antes de responder (conversión de .mkv). */
+const SLOW_SOURCE_MS = 75000;
 const MAX_NET_RETRIES = 4;
 
 export class PlayerEngine extends EventTarget {
@@ -324,6 +326,12 @@ export class PlayerEngine extends EventTarget {
       config.pLoader = makeLoader({ prefetch: true });
     }
     if (!this.live && this.startTime) config.startPosition = this.startTime;
+    if (src.fromStart) config.startPosition = this.startTime || 0;
+    if (src.slowStart) {
+      // El servidor tiene que descargar y convertir el inicio antes de entregar el playlist.
+      config.manifestLoadingTimeOut = SLOW_SOURCE_MS;
+      config.manifestLoadingMaxRetry = 1;
+    }
     const hls = new Hls(config);
     this.#hls = hls;
 
@@ -439,7 +447,8 @@ export class PlayerEngine extends EventTarget {
         // Fuente que no arranca (servidor colgado, formato que el equipo no abre): no esperar
         // a los reintentos por congelamiento, saltar a la siguiente.
         if (v.paused && v.readyState >= 2) return; // listo pero en pausa (autoplay bloqueado)
-        const limit = v.readyState >= 1 ? START_SLOW_MS : this.live ? START_LIVE_MS : START_VOD_MS;
+        const limit = this.current?.slowStart ? SLOW_SOURCE_MS + 10000
+          : v.readyState >= 1 ? START_SLOW_MS : this.live ? START_LIVE_MS : START_VOD_MS;
         if (Date.now() - this.#sourceSince > limit) this.#next(`no arrancó en ${Math.round(limit / 1000)} s`);
         return;
       }

@@ -18,7 +18,7 @@ import { join } from 'node:path';
 const ROOT = join(tmpdir(), 'gamapro-remux');
 const IDLE_MS = 120_000;
 const MAX_SESSIONS = 2;
-const READY_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 70_000;
 const UA = process.env.PROXY_UA || 'VLC/3.0.20 LibVLC/3.0.20';
 
 /** Ruta de ffmpeg: FFMPEG_PATH, paquete ffmpeg-static o el del sistema. */
@@ -54,9 +54,9 @@ setInterval(() => {
 /** Lee la cabecera del archivo para saber el códec de video (HEVC necesita la etiqueta hvc1 en Safari). */
 function probeVideoCodec(url) {
   return new Promise((resolve) => {
-    const p = spawn(FFMPEG, ['-hide_banner', '-user_agent', UA, '-i', url], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const p = spawn(FFMPEG, ['-hide_banner', '-probesize', '1M', '-analyzeduration', '2M', '-user_agent', UA, '-i', url], { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
-    const timer = setTimeout(() => p.kill('SIGKILL'), 15_000);
+    const timer = setTimeout(() => p.kill('SIGKILL'), 10_000);
     p.stderr.on('data', (d) => { err += d; });
     p.on('close', () => {
       clearTimeout(timer);
@@ -80,6 +80,16 @@ async function waitForPlaylist(s) {
 
 function startSession(id, url) {
   for (const old of [...sessions.keys()].slice(0, Math.max(0, sessions.size - MAX_SESSIONS + 1))) killSession(old);
+  return createSession(id, url);
+}
+
+/** Al reproducir de verdad, cortar las demás conversiones: el panel suele permitir
+ *  pocas conexiones a la vez por cuenta. */
+function keepOnly(id) {
+  for (const other of [...sessions.keys()]) if (other !== id) killSession(other);
+}
+
+function createSession(id, url) {
   const dir = join(ROOT, id);
   const session = { dir, last: Date.now(), error: null, proc: null, ready: null };
   sessions.set(id, session);
@@ -90,12 +100,13 @@ function startSession(id, url) {
     if (sessions.get(id) !== session) throw new Error('sesión cancelada');
     const args = [
       '-hide_banner', '-loglevel', 'error', '-nostdin',
+      '-probesize', '2M', '-analyzeduration', '3M',
       '-user_agent', UA, '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
       '-i', url,
       '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
       '-c:v', 'copy', ...(codec === 'hevc' ? ['-tag:v', 'hvc1'] : []),
       '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
-      '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event', '-hls_flags', 'temp_file',
+      '-f', 'hls', '-hls_init_time', '2', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event', '-hls_flags', 'temp_file',
       // H.264 en segmentos .ts (lo más compatible); HEVC exige fMP4 en Safari.
       ...(codec === 'hevc'
         ? ['-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', join(dir, 's%05d.m4s')]
@@ -109,6 +120,7 @@ function startSession(id, url) {
     proc.on('close', (code) => { if (code && !session.error) session.error = `ffmpeg terminó (${code}): ${log.trim().split('\n').pop() || ''}`; });
     await waitForPlaylist(session);
   })();
+  session.ready.catch((err) => { session.error ||= err.message; });
   return session;
 }
 
@@ -127,8 +139,16 @@ export async function handleRemux(req, res, pathname, search) {
     const id = createHash('sha1').update(url.href).digest('hex').slice(0, 16);
     let s = sessions.get(id);
     if (s?.error) { await killSession(id); s = null; }
+    const warm = search.get('warm') === '1';
+    if (!warm) keepOnly(id);
     s ||= startSession(id, url.href);
     s.last = Date.now();
+    if (warm) {
+      // Solo preparar: responder ya, la conversión sigue en segundo plano.
+      s.ready.catch(() => {});
+      text(res, 202, 'preparando');
+      return true;
+    }
     try {
       await s.ready;
     } catch (err) {

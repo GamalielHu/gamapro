@@ -283,7 +283,7 @@ export class Catalog {
       onActivate: (item, index) => this.activate(item, index),
       onEdge: (dir) => (dir === 'up' ? this.search.focus() : onEdge?.(dir)),
       onDwell: (item) => {
-        if (this.section === 'live') this.onPrefetch?.({ section: 'live', item });
+        if (this.section === 'live' || this.section === 'movies') this.onPrefetch?.({ section: this.section, item });
         else if (this.section === 'series') this.prefetchSeriesInfo(item);
       },
     });
@@ -478,7 +478,14 @@ export class Catalog {
         const items = () => eps.map((e, i) => ({
           id: e.id, name: `${series.name} · T${s}E${e.episode_num ?? i + 1}`, ext: e.container_extension || 'mp4', icon: e.info?.movie_image,
         }));
-        row.querySelector('[data-play]').addEventListener('click', () => {
+        // Preparar el episodio (p. ej. conversión de .mkv) apenas el usuario lo señala.
+        const playBtn = row.querySelector('[data-play]');
+        const warm = () => this.onPrefetch?.({ section: 'episode', item: items()[idx] });
+        playBtn.addEventListener('focus', warm);
+        playBtn.addEventListener('pointerenter', warm);
+        playBtn.addEventListener('pointerdown', warm);
+        if (idx === 0) warm();
+        playBtn.addEventListener('click', () => {
           const all = items();
           this.onPlay({ section: 'episode', item: all[idx], list: all, index: idx });
         });

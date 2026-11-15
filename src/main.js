@@ -101,18 +101,35 @@ function buildSources(client, section, item) {
   if (!SAFARI_UNSUPPORTED.has(ext)) return out;
   // .mkv/.avi: el servidor (Render / npm start) lo convierte a HLS al vuelo. En Safari va
   // primero (no abre Matroska); en el resto, después de intentar el archivo tal cual.
-  const remux = state.remux ? [{ kind: 'hls', url: new URL(`remux?url=${encodeURIComponent(main)}`, location.href).href, label: 'Convertido', fromStart: true, hlsjs: true }] : [];
+  const remux = state.remux ? [{ kind: 'hls', url: remuxUrl(main), label: 'Convertido', fromStart: true, hlsjs: true, slowStart: true }] : [];
   if (APPLE) return [...remux, ...out.filter((s) => s.kind === 'hls'), ...out.filter((s) => s.kind !== 'hls')];
   return [...out.filter((s) => s.kind === 'native'), ...remux, ...out.filter((s) => s.kind !== 'native')];
 }
 
 // ---------- precarga predictiva (zapping rápido) ----------
 /** Precarga el manifiesto del canal que el usuario está mirando en la lista / el siguiente. */
+const warmed = new Map(); // url de conversión → hora del último aviso
+
 function prefetchFor({ section, item }) {
-  if (section !== 'live' || !item || !state.client) return;
+  if (!item || !state.client) return;
+  if (section === 'movies' || section === 'episode') return warmRemux(section, item);
+  if (section !== 'live') return;
   const src = buildSources(state.client, section, item).find((s) => s.kind === 'hls');
   if (src) prefetchNextStream(src.url, { proxy: Boolean(src.proxy) });
 }
+
+/** Empieza la conversión del .mkv en el servidor antes del clic: al reproducir ya está lista. */
+function warmRemux(section, item) {
+  const ext = (item.ext || 'mp4').toLowerCase();
+  if (!state.remux || !APPLE || !SAFARI_UNSUPPORTED.has(ext)) return;
+  const file = section === 'movies' ? state.client.vodUrl(item.id, ext) : state.client.episodeUrl(item.id, ext);
+  const url = remuxUrl(file);
+  if (Date.now() - (warmed.get(url) || 0) < 60_000) return;
+  warmed.set(url, Date.now());
+  fetch(`${url}&warm=1`, { cache: 'no-store' }).catch(() => {});
+}
+
+const remuxUrl = (file) => new URL(`remux?url=${encodeURIComponent(file)}`, location.href).href;
 
 // ---------- descargas (películas y episodios) ----------
 function startDownload({ section, item }) {
