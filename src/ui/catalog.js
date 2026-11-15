@@ -477,6 +477,7 @@ export class Catalog {
           </div>`);
         const items = () => eps.map((e, i) => ({
           id: e.id, name: `${series.name} · T${s}E${e.episode_num ?? i + 1}`, ext: e.container_extension || 'mp4', icon: e.info?.movie_image,
+          vcodec: e.info?.video?.codec_name || '',
         }));
         // Preparar el episodio (p. ej. conversión de .mkv) apenas el usuario lo señala.
         const playBtn = row.querySelector('[data-play]');

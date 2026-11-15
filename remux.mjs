@@ -11,7 +11,7 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -78,9 +78,9 @@ async function waitForPlaylist(s) {
   throw new Error('la conversión tardó demasiado en empezar');
 }
 
-function startSession(id, url) {
+function startSession(id, url, codecHint) {
   for (const old of [...sessions.keys()].slice(0, Math.max(0, sessions.size - MAX_SESSIONS + 1))) killSession(old);
-  return createSession(id, url);
+  return createSession(id, url, codecHint);
 }
 
 /** Al reproducir de verdad, cortar las demás conversiones: el panel suele permitir
@@ -89,14 +89,17 @@ function keepOnly(id) {
   for (const other of [...sessions.keys()]) if (other !== id) killSession(other);
 }
 
-function createSession(id, url) {
+function createSession(id, url, codecHint) {
   const dir = join(ROOT, id);
-  const session = { dir, last: Date.now(), error: null, proc: null, ready: null };
+  const session = { dir, url, last: Date.now(), error: null, proc: null, ready: null, t: { start: Date.now() }, log: '' };
   sessions.set(id, session);
   session.ready = (async () => {
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
-    const codec = await probeVideoCodec(url);
+    // El panel ya informa el códec de los episodios: así se evita una conexión extra de análisis.
+    const codec = codecHint ? (/hevc|h265/i.test(codecHint) ? 'hevc' : 'other') : await probeVideoCodec(url);
+    session.codec = codec;
+    session.t.probed = Date.now();
     if (sessions.get(id) !== session) throw new Error('sesión cancelada');
     const args = [
       '-hide_banner', '-loglevel', 'error', '-nostdin',
@@ -115,10 +118,13 @@ function createSession(id, url) {
     ];
     const proc = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     session.proc = proc;
-    let log = '';
-    proc.stderr.on('data', (d) => { log = (log + d).slice(-2000); });
-    proc.on('close', (code) => { if (code && !session.error) session.error = `ffmpeg terminó (${code}): ${log.trim().split('\n').pop() || ''}`; });
+    proc.stderr.on('data', (d) => { session.log = (session.log + d).slice(-2000); });
+    proc.on('close', (code) => {
+      session.t.ended = Date.now();
+      if (code && !session.error) session.error = `ffmpeg terminó (${code}): ${session.log.trim().split('\n').pop() || ''}`;
+    });
     await waitForPlaylist(session);
+    session.t.ready = Date.now();
   })();
   session.ready.catch((err) => { session.error ||= err.message; });
   return session;
@@ -131,6 +137,25 @@ export async function handleRemux(req, res, pathname, search) {
   if (pathname !== '/remux' && !pathname.startsWith('/remux/')) return false;
   if (pathname === '/remux/health') { text(res, FFMPEG ? 200 : 404, FFMPEG ? 'gamapro-remux' : 'sin ffmpeg'); return true; }
   if (!FFMPEG) { text(res, 501, 'ffmpeg no disponible en el servidor'); return true; }
+  if (pathname === '/remux/status') {
+    // Diagnóstico: cuánto tarda cada paso de cada conversión activa.
+    const out = [];
+    for (const [id, x] of sessions) {
+      const files = await readdir(x.dir).catch(() => []);
+      let bytes = 0;
+      for (const f of files) bytes += (await stat(join(x.dir, f)).catch(() => ({ size: 0 }))).size;
+      const ms = (k) => (x.t[k] ? x.t[k] - x.t.start : null);
+      out.push({
+        id, file: x.url.replace(/\/\/([^/]+)\/(\w+\/)?([^/]+)\/([^/]+)\//, '//$1/$2***/***/'), codec: x.codec,
+        edadSeg: Math.round((Date.now() - x.t.start) / 1000), analisisMs: ms('probed'), primerSegmentoMs: ms('ready'), terminoMs: ms('ended'),
+        segmentos: files.filter((f) => /\.(ts|m4s)$/.test(f)).length, MB: +(bytes / 1048576).toFixed(1),
+        error: x.error, log: x.log.slice(-300),
+      });
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+    res.end(JSON.stringify(out, null, 2));
+    return true;
+  }
 
   if (pathname === '/remux') {
     let url;
@@ -141,7 +166,7 @@ export async function handleRemux(req, res, pathname, search) {
     if (s?.error) { await killSession(id); s = null; }
     const warm = search.get('warm') === '1';
     if (!warm) keepOnly(id);
-    s ||= startSession(id, url.href);
+    s ||= startSession(id, url.href, search.get('v'));
     s.last = Date.now();
     if (warm) {
       // Solo preparar: responder ya, la conversión sigue en segundo plano.

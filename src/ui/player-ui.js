@@ -129,7 +129,8 @@ export class PlayerUI {
     engine.addEventListener('source', (e) => {
       const { source, index, total } = e.detail;
       const fmt = source.kind === 'hls' ? 'HLS' : source.kind === 'mpegts' ? 'MPEG-TS' : 'Directo';
-      el.sub.textContent = `${fmt}${source.proxy ? ' · proxy' : ''}${index ? ` · fuente ${index + 1}/${total}` : ''}`;
+      const name = source.label === 'Convertido' ? 'Convertido (HLS)' : fmt;
+      el.sub.textContent = `${name}${source.proxy ? ' · proxy' : ''} · fuente ${index + 1}/${total}`;
     });
     engine.addEventListener('error', (e) => {
       el.spinner.classList.add('hidden');
