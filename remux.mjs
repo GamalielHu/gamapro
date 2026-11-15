@@ -36,6 +36,8 @@ const FFMPEG = await findFfmpeg();
 if (FFMPEG) console.log(`  Conversión .mkv → HLS activa (${FFMPEG})`);
 
 const sessions = new Map(); // id → { proc, dir, last, ready: Promise<void>, error }
+const recentErrors = []; // últimas conversiones fallidas, para /remux/status
+const maskUrl = (u) => u.replace(/\/\/([^/]+)\/(\w+\/)?([^/]+)\/([^/]+)\//, '//$1/$2***/***/');
 
 const text = (res, status, body) => res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'access-control-allow-origin': '*' }).end(body);
 
@@ -89,6 +91,35 @@ function keepOnly(id) {
   for (const other of [...sessions.keys()]) if (other !== id) killSession(other);
 }
 
+function startFfmpeg(session, url, dir, codec) {
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-nostdin',
+    '-probesize', '2M', '-analyzeduration', '3M',
+    '-user_agent', UA, '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+    '-i', url,
+    '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
+    '-c:v', 'copy', ...(codec === 'hevc' ? ['-tag:v', 'hvc1'] : []),
+    '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
+    '-f', 'hls', '-hls_init_time', '2', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event', '-hls_flags', 'temp_file',
+    // H.264 en segmentos .ts (lo más compatible); HEVC exige fMP4 en Safari.
+    ...(codec === 'hevc'
+      ? ['-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', join(dir, 's%05d.m4s')]
+      : ['-hls_segment_filename', join(dir, 's%05d.ts')]),
+    join(dir, 'index.m3u8'),
+  ];
+  const proc = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  session.proc = proc;
+  session.error = null;
+  session.log = '';
+  delete session.t.ended;
+  proc.stderr.on('data', (d) => { session.log = (session.log + d).slice(-2000); });
+  proc.on('close', (code) => {
+    if (session.proc !== proc) return; // intento anterior ya descartado
+    session.t.ended = Date.now();
+    if (code && !session.error) session.error = `ffmpeg terminó (${code}): ${session.log.trim().split('\n').pop() || ''}`;
+  });
+}
+
 function createSession(id, url, codecHint) {
   const dir = join(ROOT, id);
   const session = { dir, url, last: Date.now(), error: null, proc: null, ready: null, t: { start: Date.now() }, log: '' };
@@ -101,32 +132,28 @@ function createSession(id, url, codecHint) {
     session.codec = codec;
     session.t.probed = Date.now();
     if (sessions.get(id) !== session) throw new Error('sesión cancelada');
-    const args = [
-      '-hide_banner', '-loglevel', 'error', '-nostdin',
-      '-probesize', '2M', '-analyzeduration', '3M',
-      '-user_agent', UA, '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-      '-i', url,
-      '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
-      '-c:v', 'copy', ...(codec === 'hevc' ? ['-tag:v', 'hvc1'] : []),
-      '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
-      '-f', 'hls', '-hls_init_time', '2', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event', '-hls_flags', 'temp_file',
-      // H.264 en segmentos .ts (lo más compatible); HEVC exige fMP4 en Safari.
-      ...(codec === 'hevc'
-        ? ['-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', join(dir, 's%05d.m4s')]
-        : ['-hls_segment_filename', join(dir, 's%05d.ts')]),
-      join(dir, 'index.m3u8'),
-    ];
-    const proc = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    session.proc = proc;
-    proc.stderr.on('data', (d) => { session.log = (session.log + d).slice(-2000); });
-    proc.on('close', (code) => {
-      session.t.ended = Date.now();
-      if (code && !session.error) session.error = `ffmpeg terminó (${code}): ${session.log.trim().split('\n').pop() || ''}`;
-    });
-    await waitForPlaylist(session);
+    // El panel suele rechazar una conexión nueva mientras cuenta la anterior como activa
+    // (límite de conexiones de la cuenta): si ffmpeg falla al empezar, reintentar.
+    for (let attempt = 1; ; attempt++) {
+      startFfmpeg(session, url, dir, codec);
+      try {
+        await waitForPlaylist(session);
+        break;
+      } catch (err) {
+        if (attempt >= 3 || sessions.get(id) !== session || /tardó demasiado/.test(err.message)) throw err;
+        session.attempts = attempt + 1;
+        try { session.proc?.kill('SIGKILL'); } catch { /* ya terminó */ }
+        await new Promise((r) => setTimeout(r, 2500 * attempt));
+        if (sessions.get(id) !== session) throw new Error('sesión cancelada');
+      }
+    }
     session.t.ready = Date.now();
   })();
-  session.ready.catch((err) => { session.error ||= err.message; });
+  session.ready.catch((err) => {
+    session.error ||= err.message;
+    recentErrors.unshift({ hora: new Date().toISOString(), file: maskUrl(url), error: session.error, log: session.log.slice(-300) });
+    recentErrors.length = Math.min(recentErrors.length, 5);
+  });
   return session;
 }
 
@@ -146,14 +173,14 @@ export async function handleRemux(req, res, pathname, search) {
       for (const f of files) bytes += (await stat(join(x.dir, f)).catch(() => ({ size: 0 }))).size;
       const ms = (k) => (x.t[k] ? x.t[k] - x.t.start : null);
       out.push({
-        id, file: x.url.replace(/\/\/([^/]+)\/(\w+\/)?([^/]+)\/([^/]+)\//, '//$1/$2***/***/'), codec: x.codec,
+        id, file: maskUrl(x.url), codec: x.codec, intentos: x.attempts || 1,
         edadSeg: Math.round((Date.now() - x.t.start) / 1000), analisisMs: ms('probed'), primerSegmentoMs: ms('ready'), terminoMs: ms('ended'),
         segmentos: files.filter((f) => /\.(ts|m4s)$/.test(f)).length, MB: +(bytes / 1048576).toFixed(1),
         error: x.error, log: x.log.slice(-300),
       });
     }
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
-    res.end(JSON.stringify(out, null, 2));
+    res.end(JSON.stringify({ activas: out, fallidas: recentErrors }, null, 2));
     return true;
   }
 
