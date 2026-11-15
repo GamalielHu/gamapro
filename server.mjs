@@ -14,6 +14,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { handleProxy } from './worker/proxy.js';
+import { handleRemux } from './remux.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PORT = Number(process.env.PORT || 8787);
@@ -35,7 +36,8 @@ async function proxy(req, res) {
     headers: req.headers.range ? { range: req.headers.range } : {},
     signal: ctrl.signal,
   });
-  const response = await handleProxy(request, { allowHosts: ALLOW, userAgent: UA });
+  const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+  const response = await handleProxy(request, { allowHosts: ALLOW, userAgent: UA, gzip });
   res.writeHead(response.status, Object.fromEntries(response.headers));
   if (!response.body) { res.end(); return; }
   Readable.fromWeb(response.body).on('error', () => res.destroy()).pipe(res);
@@ -56,7 +58,11 @@ async function serveStatic(req, res, pathname) {
 }
 
 createServer((req, res) => {
-  const { pathname } = new URL(req.url, 'http://local');
+  const { pathname, searchParams } = new URL(req.url, 'http://local');
+  if (pathname === '/remux' || pathname.startsWith('/remux/')) {
+    handleRemux(req, res, pathname, searchParams).catch(() => res.destroy());
+    return;
+  }
   if (pathname === '/proxy' || pathname.startsWith('/proxy/')) {
     proxy(req, res).catch(() => res.destroy());
     return;

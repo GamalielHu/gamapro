@@ -5,7 +5,7 @@ services:
     name: gamapro
     runtime: node
     plan: free
-    buildCommand: "true"
+    buildCommand: npm install --omit=dev
     startCommand: node server.mjs
     healthCheckPath: /proxy/health
     envVars:

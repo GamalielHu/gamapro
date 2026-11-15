@@ -88,10 +88,12 @@ async function debug(target, userAgent, ipAlias) {
 
 /**
  * @param {Request} request
- * @param {{ allowHosts?: string[], userAgent?: string, ipAlias?: boolean }} [opts]
+ * @param {{ allowHosts?: string[], userAgent?: string, ipAlias?: boolean, gzip?: boolean }} [opts]
+ *   gzip: comprimir respuestas de texto/JSON (listas del panel de varios MB). El servidor
+ *   Node lo activa si el navegador acepta gzip; Cloudflare ya comprime solo.
  * @returns {Promise<Response>}
  */
-export async function handleProxy(request, { allowHosts = [], userAgent = DEFAULT_UA, ipAlias = false } = {}) {
+export async function handleProxy(request, { allowHosts = [], userAgent = DEFAULT_UA, ipAlias = false, gzip = false } = {}) {
   const self = new URL(request.url);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   if (self.pathname.endsWith('/health')) return text('gamapro-proxy');
@@ -132,7 +134,17 @@ export async function handleProxy(request, { allowHosts = [], userAgent = DEFAUL
     out.set('cache-control', 'no-cache');
     return new Response(request.method === 'HEAD' ? null : body, { status: upstream.status, headers: out });
   }
+  // fetch ya descomprimió el cuerpo: el content-length del panel no corresponde.
+  if (upstream.headers.get('content-encoding')) out.delete('content-length');
   const dl = self.searchParams.get('dl');
+  if (gzip && !range && !dl && upstream.ok && upstream.body && /json|text|javascript/i.test(type)
+    && typeof CompressionStream === 'function') {
+    out.delete('content-length');
+    out.set('content-encoding', 'gzip');
+    out.set('vary', 'accept-encoding');
+    const body = request.method === 'HEAD' ? null : upstream.body.pipeThrough(new CompressionStream('gzip'));
+    return new Response(body, { status: upstream.status, headers: out });
+  }
   if (dl) {
     const safe = dl.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 150) || 'video';
     out.set('content-disposition', `attachment; filename="${safe.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safe)}`);

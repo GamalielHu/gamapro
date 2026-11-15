@@ -19,7 +19,7 @@ const els = {
   player: $('#player'),
 };
 
-const state = { client: null, view: 'live' };
+const state = { client: null, view: 'live', remux: false };
 
 const settings = loadSettings();
 configureProxy({ url: settings.proxyUrl || getProxy().url, mode: settings.proxyMode });
@@ -33,6 +33,40 @@ function withProxyFallback(direct, { vod = false } = {}) {
   const list = needsProxy(direct[0]?.url || '') ? proxied : [...direct, ...proxied];
   // VOD: probar primero el archivo (directo y vía proxy); HLS solo como último recurso.
   return vod ? [...list.filter((s) => s.kind === 'native'), ...list.filter((s) => s.kind !== 'native')] : list;
+}
+
+// Safari (iPad/iPhone/Mac) no abre .mkv/.avi: en esos casos probar antes la versión HLS.
+const APPLE = /Apple/.test(navigator.vendor || '');
+const SAFARI_UNSUPPORTED = new Set(['mkv', 'avi', 'wmv', 'flv']);
+
+/** Recuerda qué posición de la lista de fuentes funcionó por sección, para probarla primero
+ *  la próxima vez (p. ej. si siempre funciona "Directo · proxy", no esperar a las directas). */
+const LAST_GOOD_KEY = 'gp.lastGoodSource';
+const lastGood = (() => { try { return JSON.parse(localStorage.getItem(LAST_GOOD_KEY) || '{}'); } catch { return {}; } })();
+let lastResolved = null;
+
+/** Forma de la lista (tipos y proxy en orden): la posición recordada solo vale para la misma forma. */
+const shapeOf = (list) => list.map((s) => `${s.kind}${s.proxy ? '+p' : ''}`).join(',');
+
+function preferLastGood(section, list) {
+  list.forEach((s, i) => { s.slot = i; });
+  const good = lastGood[section];
+  if (!good || good.shape !== shapeOf(list) || !list[good.slot] || good.slot === 0) return list;
+  return [list[good.slot], ...list.filter((_, i) => i !== good.slot)];
+}
+
+function rememberGoodSource() {
+  const src = engine.current;
+  if (!lastResolved || !src || src.slot === undefined) return;
+  lastGood[lastResolved.section] = { slot: src.slot, shape: lastResolved.shape };
+  try { localStorage.setItem(LAST_GOOD_KEY, JSON.stringify(lastGood)); } catch { /* modo privado */ }
+}
+
+function sourcesFor(client, section, item) {
+  const list = buildSources(client, section, item);
+  lastResolved = { section, shape: shapeOf(list) };
+  const ordered = preferLastGood(section, list);
+  return ordered;
 }
 
 function buildSources(client, section, item) {
@@ -63,7 +97,13 @@ function buildSources(client, section, item) {
       { kind: 'native', url: alt },
       { kind: 'hls', url: main.replace(/\.[^./]+$/, '.m3u8') },
     ];
-  return withProxyFallback(list, { vod: true });
+  const out = withProxyFallback(list, { vod: true });
+  if (!SAFARI_UNSUPPORTED.has(ext)) return out;
+  // .mkv/.avi: el servidor (Render / npm start) lo convierte a HLS al vuelo. En Safari va
+  // primero (no abre Matroska); en el resto, después de intentar el archivo tal cual.
+  const remux = state.remux ? [{ kind: 'hls', url: new URL(`remux?url=${encodeURIComponent(main)}`, location.href).href, label: 'Convertido', fromStart: true, hlsjs: true }] : [];
+  if (APPLE) return [...remux, ...out.filter((s) => s.kind === 'hls'), ...out.filter((s) => s.kind !== 'hls')];
+  return [...out.filter((s) => s.kind === 'native'), ...remux, ...out.filter((s) => s.kind !== 'native')];
 }
 
 // ---------- precarga predictiva (zapping rápido) ----------
@@ -98,12 +138,14 @@ const playerUI = new PlayerUI({
   engine,
   resolve: ({ section, item }) => ({
     title: `${item.num ? `${item.num} · ` : ''}${item.name}`,
-    sources: buildSources(state.client, section, item),
+    sources: sourcesFor(state.client, section, item),
     live: section === 'live',
   }),
   onDownload: startDownload,
   onPrefetch: prefetchFor,
 });
+
+engine.addEventListener('state', (e) => { if (e.detail.state === 'playing') rememberGoodSource(); });
 
 // ---------- catálogo ----------
 const catalog = new Catalog({
@@ -226,8 +268,17 @@ async function detectLocalProxy() {
   } catch { /* hosting estático sin proxy */ }
 }
 
+/** ¿El servidor puede convertir .mkv a HLS? (Render / npm start con ffmpeg). */
+async function detectRemux() {
+  if (location.protocol === 'file:') return;
+  try {
+    const res = await fetch('remux/health', { cache: 'no-store', signal: AbortSignal.timeout(1500) });
+    state.remux = res.ok && (await res.text()).trim() === 'gamapro-remux';
+  } catch { /* sin conversión (Cloudflare u hosting estático) */ }
+}
+
 async function boot() {
-  await detectLocalProxy();
+  await Promise.all([detectLocalProxy(), detectRemux()]);
   const creds = await loadCredentials();
   if (!creds) return showLogin();
   try {

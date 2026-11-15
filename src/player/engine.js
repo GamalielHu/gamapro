@@ -147,6 +147,11 @@ function describeHlsError(data) {
 
 const STALL_LIVE_MS = 8000;
 const STALL_VOD_MS = 15000;
+/** Máximo para que una fuente muestre el primer cuadro antes de pasar a la siguiente.
+ *  Si ya llegaron los metadatos (el archivo responde, solo va lento) se da más margen. */
+const START_LIVE_MS = 9000;
+const START_VOD_MS = 12000;
+const START_SLOW_MS = 25000;
 const MAX_NET_RETRIES = 4;
 
 export class PlayerEngine extends EventTarget {
@@ -167,13 +172,15 @@ export class PlayerEngine extends EventTarget {
   #attempts = [];
   #qualityTimer = 0;
   #qualityRaised = false;
+  #started = false;
+  #sourceSince = 0;
   live = false;
 
   constructor(video) {
     super();
     this.#video = video;
     video.addEventListener('error', () => this.#onNativeError());
-    video.addEventListener('playing', () => { this.#retries = 0; this.#emit('state', { state: 'playing' }); this.#scheduleQualityUp(); });
+    video.addEventListener('playing', () => { this.#started = true; this.#retries = 0; this.#emit('state', { state: 'playing' }); this.#scheduleQualityUp(); });
     video.addEventListener('waiting', () => { clearTimeout(this.#qualityTimer); this.#emit('state', { state: 'buffering' }); });
     video.addEventListener('pause', () => this.#emit('state', { state: 'paused' }));
     video.addEventListener('loadedmetadata', () => this.#emit('tracks'));
@@ -250,8 +257,17 @@ export class PlayerEngine extends EventTarget {
       return;
     }
     this.#retries = 0;
+    this.#started = false;
+    this.#sourceSince = Date.now();
     this.#emit('source', { source: src, index: this.#index, total: this.#sources.length });
     this.#emit('state', { state: 'loading' });
+    if (src.fromStart) {
+      // Playlist que el servidor aún está generando (parece un directo): el reproductor
+      // arrancaría por el final; volver al inicio (o al punto guardado).
+      this.#video.addEventListener('loadedmetadata', () => {
+        if (token === this.#token && Math.abs(this.#video.currentTime - (this.startTime || 0)) > 1) this.#video.currentTime = this.startTime || 0;
+      }, { once: true });
+    }
     if (src.kind === 'hls') this.#playHls(src, token);
     else if (src.kind === 'mpegts') this.#playMpegts(src, token);
     else this.#playNative(src);
@@ -291,7 +307,9 @@ export class PlayerEngine extends EventTarget {
   }
 
   #playHls(src, token) {
-    if (PREFER_NATIVE_HLS || !Hls.isSupported()) {
+    // hlsjs: fuente que conviene reproducir con hls.js también en Safari (iPadOS 17.1+ lo admite),
+    // p. ej. el .mkv convertido, cuyo playlist sigue creciendo mientras se reproduce.
+    if ((PREFER_NATIVE_HLS && !src.hlsjs) || !Hls.isSupported()) {
       if (this.#video.canPlayType('application/vnd.apple.mpegurl')) return this.#playNative(src);
       return this.#next('HLS no soportado');
     }
@@ -417,6 +435,14 @@ export class PlayerEngine extends EventTarget {
     this.#watchdog = setInterval(() => {
       if (token !== this.#token) return clearInterval(this.#watchdog);
       const v = this.#video;
+      if (!this.#started) {
+        // Fuente que no arranca (servidor colgado, formato que el equipo no abre): no esperar
+        // a los reintentos por congelamiento, saltar a la siguiente.
+        if (v.paused && v.readyState >= 2) return; // listo pero en pausa (autoplay bloqueado)
+        const limit = v.readyState >= 1 ? START_SLOW_MS : this.live ? START_LIVE_MS : START_VOD_MS;
+        if (Date.now() - this.#sourceSince > limit) this.#next(`no arrancó en ${Math.round(limit / 1000)} s`);
+        return;
+      }
       if (v.paused || v.ended) { this.#stallSince = 0; return; }
       if (v.currentTime !== this.#lastTime) {
         this.#lastTime = v.currentTime;

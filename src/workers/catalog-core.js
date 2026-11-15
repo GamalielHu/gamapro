@@ -112,29 +112,46 @@ function buildIndex(section, cols) {
   return counts;
 }
 
+/** Descarga, convierte a columnas y guarda comprimido. No toca el índice de búsqueda. */
+async function fetchSection({ section, key, creds, proxy }) {
+  const spec = SPECS[section];
+  configureProxy(proxy);
+  const client = new XtreamClient(creds);
+  const [categories, rows] = await Promise.all([spec.cats(client), spec.items(client)]);
+  const cols = toColumns(section, rows);
+  pack({ categories, cols })
+    .then((packed) => idbSet(key, { v: FORMAT, t: Date.now(), packed }))
+    .catch((e) => console.warn('[catalog] no se pudo guardar', key, e));
+  return { categories, cols };
+}
+
+const refreshing = new Set();
+function refreshInBackground(req) {
+  if (refreshing.has(req.key)) return;
+  refreshing.add(req.key);
+  fetchSection(req)
+    .catch((e) => console.warn('[catalog] actualización en segundo plano fallida', req.key, e))
+    .finally(() => refreshing.delete(req.key));
+}
+
 /**
  * @param {{ section: string, key: string, creds: object, proxy: {url:string, mode:string},
  *           ttlMs: number, force?: boolean }} req
  * @returns {Promise<{ categories: object[], cols: object, counts: object, stale: boolean, from: string }>}
  */
 export async function loadSection({ section, key, creds, proxy, ttlMs, force = false }) {
-  const spec = SPECS[section];
   const record = await idbGet(key);
   const valid = record && record.v === FORMAT;
-  if (valid && !force && Date.now() - record.t < ttlMs) {
+  if (valid && !force) {
     const { categories, cols } = await unpack(record.packed);
+    // Copia vencida: se muestra igual al instante y se actualiza en segundo plano
+    // (la versión nueva queda guardada para la próxima vez).
+    if (Date.now() - record.t >= ttlMs) refreshInBackground({ section, key, creds, proxy });
     return { categories, cols, counts: buildIndex(section, cols), stale: false, from: 'cache' };
   }
   try {
-    configureProxy(proxy);
-    const client = new XtreamClient(creds);
-    const [categories, rows] = await Promise.all([spec.cats(client), spec.items(client)]);
-    const cols = toColumns(section, rows);
-    const counts = buildIndex(section, cols);
-    pack({ categories, cols })
-      .then((packed) => idbSet(key, { v: FORMAT, t: Date.now(), packed }))
-      .catch((e) => console.warn('[catalog] no se pudo guardar', key, e));
-    return { categories, cols, counts, stale: false, from: 'network' };
+    const { categories, cols } = await fetchSection({ section, key, creds, proxy });
+    return { categories, cols, counts: buildIndex(section, cols), stale: false, from: 'network' };
   } catch (err) {
     if (!valid) throw err;
     // Panel caído: servir la última copia guardada.

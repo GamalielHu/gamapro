@@ -12,3 +12,4 @@ README.md
 *.log
 iniciar.bat
 render.yaml
+remux.mjs

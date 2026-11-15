@@ -266,6 +266,9 @@ export class Catalog {
     this.client = null;
     this.section = null;
     this.data = new Map(); // section -> { categories, items }
+    this.loading = new Map(); // section -> Promise (descarga en curso)
+    this.infoLoading = new Map(); // series_id -> Promise
+    this.warmed = false;
     this.filtered = [];
     this.loadToken = 0;
 
@@ -279,7 +282,10 @@ export class Catalog {
       renderItem: (item) => renderCard(item, SECTIONS[this.section].layout.art),
       onActivate: (item, index) => this.activate(item, index),
       onEdge: (dir) => (dir === 'up' ? this.search.focus() : onEdge?.(dir)),
-      onDwell: (item) => { if (this.section === 'live') this.onPrefetch?.({ section: 'live', item }); },
+      onDwell: (item) => {
+        if (this.section === 'live') this.onPrefetch?.({ section: 'live', item });
+        else if (this.section === 'series') this.prefetchSeriesInfo(item);
+      },
     });
 
     this.search.addEventListener('input', debounce(() => this.applyFilter(), 120));
@@ -292,6 +298,8 @@ export class Catalog {
   setClient(client) {
     this.client = client;
     this.data.clear();
+    this.loading.clear();
+    this.warmed = false;
   }
 
   get prefix() {
@@ -309,17 +317,11 @@ export class Catalog {
 
     if (!this.data.has(section) || force) {
       this.grid.setItems([]);
-      this.setStatus('Cargando catálogo…');
+      this.countLabel.textContent = '';
+      this.setStatus(section === 'live' ? 'Cargando catálogo…' : 'Cargando catálogo… (la primera vez puede tardar: el panel envía la lista completa)');
       try {
-        const res = await catalogStore.load({
-          section,
-          accountId: this.client.accountId,
-          creds: this.client.credentials,
-          ttlHours: loadSettings().cacheHours,
-          force,
-        });
-        this.data.set(section, { categories: res.categories, counts: res.counts, items: fromColumns(res.cols) });
-        if (res.stale) toast('Sin conexión con el panel: mostrando el catálogo guardado.');
+        const res = await this.loadSection(section, { force });
+        if (res.stale && token === this.loadToken) toast('Sin conexión con el panel: mostrando el catálogo guardado.');
       } catch (err) {
         if (token === this.loadToken) this.setStatus(`No se pudo cargar: ${err.message}`);
         return;
@@ -328,6 +330,55 @@ export class Catalog {
     if (token !== this.loadToken) return;
     this.fillCategories();
     this.applyFilter();
+    if (section === 'live') this.warmUp();
+  }
+
+  /** Una sola descarga por sección aunque se pida dos veces (precarga + clic del usuario). */
+  loadSection(section, { force = false } = {}) {
+    const running = this.loading.get(section);
+    if (running && !force) return running;
+    const client = this.client;
+    const p = catalogStore.load({
+      section,
+      accountId: client.accountId,
+      creds: client.credentials,
+      ttlHours: loadSettings().cacheHours,
+      force,
+    }).then((res) => {
+      if (this.client === client) this.data.set(section, { categories: res.categories, counts: res.counts, items: fromColumns(res.cols) });
+      return res;
+    }).finally(() => { if (this.loading.get(section) === p) this.loading.delete(section); });
+    this.loading.set(section, p);
+    return p;
+  }
+
+  /** Tras mostrar Live, precargar Películas y Series en segundo plano (una tras otra)
+   *  para que al abrirlas ya estén listas. */
+  warmUp() {
+    if (this.warmed) return;
+    this.warmed = true;
+    const idle = globalThis.requestIdleCallback || ((fn) => setTimeout(fn, 1500));
+    idle(async () => {
+      for (const section of ['series', 'movies']) {
+        if (this.data.has(section)) continue;
+        try { await this.loadSection(section); } catch { /* se reintenta al abrir la sección */ }
+      }
+    }, { timeout: 4000 });
+  }
+
+  /** Al detenerse sobre una serie, pedir sus temporadas por adelantado. */
+  prefetchSeriesInfo(series) {
+    this.seriesInfo(series.id).catch(() => {});
+  }
+
+  seriesInfo(id) {
+    let p = this.infoLoading.get(id);
+    if (!p) {
+      p = cached(`${this.prefix}series-info:${id}`, () => this.client.getSeriesInfo(id), { ttlHours: 6 })
+        .finally(() => this.infoLoading.delete(id));
+      this.infoLoading.set(id, p);
+    }
+    return p;
   }
 
   fillCategories() {
@@ -383,7 +434,7 @@ export class Catalog {
     d.innerHTML = '<div class="p-8 text-slate-400 text-sm">Cargando episodios…</div>';
     let data;
     try {
-      data = await cached(`${this.prefix}series-info:${series.id}`, () => this.client.getSeriesInfo(series.id), { ttlHours: 6 });
+      data = await this.seriesInfo(series.id);
     } catch (err) {
       d.innerHTML = '';
       toast(`No se pudo cargar la serie: ${err.message}`, { type: 'error' });
