@@ -80,9 +80,9 @@ async function waitForPlaylist(s) {
   throw new Error('la conversión tardó demasiado en empezar');
 }
 
-function startSession(id, url, codecHint) {
+function startSession(id, url, codecHint, audioHint) {
   for (const old of [...sessions.keys()].slice(0, Math.max(0, sessions.size - MAX_SESSIONS + 1))) killSession(old);
-  return createSession(id, url, codecHint);
+  return createSession(id, url, codecHint, audioHint);
 }
 
 /** Al reproducir de verdad, cortar las demás conversiones: el panel suele permitir
@@ -92,6 +92,8 @@ function keepOnly(id) {
 }
 
 function startFfmpeg(session, url, dir, codec) {
+  // Audio que ya es AAC se copia tal cual: nada de CPU (el plan gratis de Render tiene muy poca).
+  const audio = session.audio === 'aac' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-ac', '2', '-b:a', '128k'];
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     '-probesize', '2M', '-analyzeduration', '3M',
@@ -99,7 +101,7 @@ function startFfmpeg(session, url, dir, codec) {
     '-i', url,
     '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
     '-c:v', 'copy', ...(codec === 'hevc' ? ['-tag:v', 'hvc1'] : []),
-    '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
+    ...audio,
     '-f', 'hls', '-hls_init_time', '2', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event', '-hls_flags', 'temp_file',
     // H.264 en segmentos .ts (lo más compatible); HEVC exige fMP4 en Safari.
     ...(codec === 'hevc'
@@ -120,7 +122,7 @@ function startFfmpeg(session, url, dir, codec) {
   });
 }
 
-function createSession(id, url, codecHint) {
+function createSession(id, url, codecHint, audioHint) {
   const dir = join(ROOT, id);
   const session = { dir, url, last: Date.now(), error: null, proc: null, ready: null, t: { start: Date.now() }, log: '' };
   sessions.set(id, session);
@@ -130,6 +132,7 @@ function createSession(id, url, codecHint) {
     // El panel ya informa el códec de los episodios: así se evita una conexión extra de análisis.
     const codec = codecHint ? (/hevc|h265/i.test(codecHint) ? 'hevc' : 'other') : await probeVideoCodec(url);
     session.codec = codec;
+    session.audio = /^aac$/i.test(audioHint || '') ? 'aac' : 'otro';
     session.t.probed = Date.now();
     if (sessions.get(id) !== session) throw new Error('sesión cancelada');
     // El panel suele rechazar una conexión nueva mientras cuenta la anterior como activa
@@ -173,7 +176,8 @@ export async function handleRemux(req, res, pathname, search) {
       for (const f of files) bytes += (await stat(join(x.dir, f)).catch(() => ({ size: 0 }))).size;
       const ms = (k) => (x.t[k] ? x.t[k] - x.t.start : null);
       out.push({
-        id, file: maskUrl(x.url), codec: x.codec, intentos: x.attempts || 1,
+        id, file: maskUrl(x.url), codec: x.codec, audio: x.audio, intentos: x.attempts || 1,
+        pedidosDelReproductor: x.hits || 0, ultimoArchivoPedido: x.lastFile || null,
         edadSeg: Math.round((Date.now() - x.t.start) / 1000), analisisMs: ms('probed'), primerSegmentoMs: ms('ready'), terminoMs: ms('ended'),
         segmentos: files.filter((f) => /\.(ts|m4s)$/.test(f)).length, MB: +(bytes / 1048576).toFixed(1),
         error: x.error, log: x.log.slice(-300),
@@ -193,7 +197,7 @@ export async function handleRemux(req, res, pathname, search) {
     if (s?.error) { await killSession(id); s = null; }
     const warm = search.get('warm') === '1';
     if (!warm) keepOnly(id);
-    s ||= startSession(id, url.href, search.get('v'));
+    s ||= startSession(id, url.href, search.get('v'), search.get('a'));
     s.last = Date.now();
     if (warm) {
       // Solo preparar: responder ya, la conversión sigue en segundo plano.
@@ -216,6 +220,8 @@ export async function handleRemux(req, res, pathname, search) {
   const s = sessions.get(id);
   if (!s || !/^[\w.-]+$/.test(file || '')) { text(res, 404, 'sesión terminada'); return true; }
   s.last = Date.now();
+  s.hits = (s.hits || 0) + 1;
+  s.lastFile = file;
   const path = join(s.dir, file);
   try {
     let body = await readFile(path);

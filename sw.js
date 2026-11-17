@@ -5,7 +5,7 @@
  * - Librerías de CDN (URLs con versión fija): caché primero.
  * La API del panel, el proxy y los streams nunca pasan por aquí.
  */
-const VERSION = 'gamapro-v7';
+const VERSION = 'gamapro-v8';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'src/styles.css', 'src/main.js',
   'src/services/xtream.js', 'src/services/cache.js', 'src/player/engine.js', 'src/player/wakelock.js', 'src/player/nosleep.mp4',

@@ -101,8 +101,10 @@ function buildSources(client, section, item) {
   if (!SAFARI_UNSUPPORTED.has(ext)) return out;
   // .mkv/.avi: el servidor (Render / npm start) lo convierte a HLS al vuelo. En Safari va
   // primero (no abre Matroska); en el resto, después de intentar el archivo tal cual.
-  const remux = state.remux ? [{ kind: 'hls', url: remuxUrl(main, item), label: 'Convertido', fromStart: true, hlsjs: true, slowStart: true }] : [];
-  if (APPLE) return [...remux, ...out.filter((s) => s.kind === 'hls'), ...out.filter((s) => s.kind !== 'hls')];
+  const converted = { kind: 'hls', url: remuxUrl(main, item), label: 'Convertido', fromStart: true, slowStart: true };
+  const remux = state.remux ? [{ ...converted, hlsjs: true }] : [];
+  // Safari: primero con su reproductor HLS propio y, si no, con hls.js (la conversión ya hecha se reutiliza).
+  if (APPLE) return [...(state.remux ? [converted] : []), ...remux, ...out.filter((s) => s.kind === 'hls'), ...out.filter((s) => s.kind !== 'hls')];
   return [...out.filter((s) => s.kind === 'native'), ...remux, ...out.filter((s) => s.kind !== 'native')];
 }
 
@@ -130,7 +132,10 @@ function warmRemux(section, item) {
 }
 
 /** v: códec de video que informa el panel (evita que el servidor tenga que analizar el archivo). */
-const remuxUrl = (file, item) => new URL(`remux?url=${encodeURIComponent(file)}${item?.vcodec ? `&v=${encodeURIComponent(item.vcodec)}` : ''}`, location.href).href;
+const remuxUrl = (file, item) => {
+  const hint = `${item?.vcodec ? `&v=${encodeURIComponent(item.vcodec)}` : ''}${item?.acodec ? `&a=${encodeURIComponent(item.acodec)}` : ''}`;
+  return new URL(`remux?url=${encodeURIComponent(file)}${hint}`, location.href).href;
+};
 
 // ---------- descargas (películas y episodios) ----------
 function startDownload({ section, item }) {

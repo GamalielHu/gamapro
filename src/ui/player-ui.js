@@ -129,7 +129,7 @@ export class PlayerUI {
     engine.addEventListener('source', (e) => {
       const { source, index, total } = e.detail;
       const fmt = source.kind === 'hls' ? 'HLS' : source.kind === 'mpegts' ? 'MPEG-TS' : 'Directo';
-      const name = source.label === 'Convertido' ? 'Convertido (HLS)' : fmt;
+      const name = source.label === 'Convertido' ? `Convertido (${source.hlsjs ? 'hls.js' : 'nativo'})` : fmt;
       el.sub.textContent = `${name}${source.proxy ? ' · proxy' : ''} · fuente ${index + 1}/${total}`;
     });
     engine.addEventListener('error', (e) => {
@@ -303,7 +303,9 @@ export class PlayerUI {
   // ---------- diagnóstico cuando ninguna fuente funciona ----------
   showDetails(attempts) {
     const box = this.el.details;
-    const label = (src) => `${src.kind === 'hls' ? 'HLS' : src.kind === 'mpegts' ? 'MPEG-TS' : 'Directo'}${src.proxy ? ' vía proxy' : ''}`;
+    const label = (src) => (src.label === 'Convertido' ? `Convertido${src.hlsjs ? ' (hls.js)' : ' (nativo)'}`
+      : `${src.kind === 'hls' ? 'HLS' : src.kind === 'mpegts' ? 'MPEG-TS' : 'Directo'}${src.proxy ? ' vía proxy' : ''}`);
+    const converted = attempts.some((a) => a.source.label === 'Convertido');
     const path = (url) => { try { const u = new URL(url); return `${u.host}/…/${u.pathname.split('/').pop()}`; } catch { return url; } };
     const probe = attempts.find((a) => a.source.proxy)?.source.url || attempts[0]?.source.url;
     const debugUrl = probe && proxyDebugUrl(probe);
@@ -311,9 +313,17 @@ export class PlayerUI {
       <div class="flex items-center gap-2 mb-2"><b class="text-sm text-red-300 flex-1">No se pudo reproducir</b>
         <button class="osd-btn !w-8 !h-8 !text-sm" data-x aria-label="Cerrar">✕</button></div>
       <ol class="space-y-1 list-decimal pl-4">${attempts.map((a) => `<li><span class="text-slate-300">${esc(label(a.source))}</span> · <span class="text-slate-400">${esc(path(a.source.url))}</span><br><span class="text-amber-300">${esc(a.reason)}</span></li>`).join('')}</ol>
+      ${converted ? '<p class="mt-3 text-slate-300">Conversión en el servidor:</p><pre data-remux class="mt-1 whitespace-pre-wrap break-all text-slate-300">Consultando…</pre>' : ''}
       ${debugUrl ? '<button class="btn mt-3 !py-1.5 !text-xs" data-probe>Diagnóstico del proxy</button><pre data-out class="mt-2 whitespace-pre-wrap break-all text-slate-300"></pre>' : ''}`;
     box.classList.remove('hidden');
     box.querySelector('[data-x]').onclick = () => box.classList.add('hidden');
+    const remuxOut = box.querySelector('[data-remux]');
+    if (remuxOut) {
+      // Estado de la conversión visto desde el servidor: indica en qué paso falló o se demoró.
+      fetch('remux/status', { cache: 'no-store' })
+        .then(async (res) => { remuxOut.textContent = res.ok ? JSON.stringify(await res.json(), null, 1) : `HTTP ${res.status}`; })
+        .catch((err) => { remuxOut.textContent = `Sin respuesta: ${err.message}`; });
+    }
     const btn = box.querySelector('[data-probe]');
     if (btn) {
       btn.onclick = async () => {
