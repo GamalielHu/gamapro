@@ -75,3 +75,14 @@ createServer((req, res) => {
     for (const ip of ips) console.log(`  En la red local: http://${ip.address}:${PORT}`);
   }
 });
+
+// Render (plan gratis) apaga el servicio tras 15 min sin visitas y el primer arranque
+// tarda cerca de un minuto. Una visita propia cada 10 min lo mantiene despierto.
+// Render define RENDER_EXTERNAL_URL; KEEP_AWAKE=0 lo desactiva.
+const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL && process.env.KEEP_AWAKE !== '0') {
+  setInterval(() => {
+    fetch(`${SELF_URL}/proxy/health`, { cache: 'no-store' }).catch(() => {});
+  }, 10 * 60_000).unref();
+  console.log(`  Manteniendo despierto ${SELF_URL} (visita cada 10 min)`);
+}
